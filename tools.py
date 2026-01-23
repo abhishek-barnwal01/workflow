@@ -1,5 +1,5 @@
 """Azure AI Search tool with hybrid search"""
-from langchain_core.tools import tool  # Updated import for LangChain 1.x
+from langchain.tools import tool
 from azure.search.documents import SearchClient
 from azure.search.documents.models import VectorizedQuery
 from azure.core.credentials import AzureKeyCredential
@@ -39,7 +39,7 @@ def azure_ai_search(query: str, index_type: str, top_k: int) -> str:
         top_k: Number of results (1-50)
     
     Returns:
-        JSON with docs and metadata including content_id for deduplication
+        JSON with docs and metadata
     """
     
     index_name = (
@@ -95,7 +95,7 @@ def azure_ai_search(query: str, index_type: str, top_k: int) -> str:
             full_content = f"{title}\n\n{content}" if title else content
             
             doc = {
-                "content_id": result.get("content_id"),  # For deduplication
+                "id": result.get("content_id"),
                 "content": full_content[:1000],
                 "score": result.get("@search.score", 0.0),
                 "source": source
@@ -117,8 +117,7 @@ def azure_ai_search(query: str, index_type: str, top_k: int) -> str:
                 "avg_score": round(avg_score, 2),
                 "index": index_name,
                 "query": query,
-                "search_type": "hybrid" if query_embedding else "keyword",
-                "doc_ids": [d["content_id"] for d in docs if d["content_id"]]  # For scratchpad
+                "search_type": "hybrid" if query_embedding else "keyword"
             }
         })
     
