@@ -8,13 +8,8 @@ import time
 import json
 import os
 from flask import Flask, request, jsonify, Response, stream_with_context
-from logging_config import set_log_level, workflow_logger, log_debug
 
 app = Flask(__name__)
-
-# Configure logging level from environment (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-set_log_level(LOG_LEVEL)
 
 # ---------- Build LangGraph Flow ----------
 graph = build_graph()  # this must return COMPILED graph
@@ -265,19 +260,21 @@ def generate_stream(user_query, langchain_messages, user_id, session_id, model):
             config={"configurable": {"thread_id": session_id}}
         )
 
-        # Debug: log what we got back
-        log_debug(workflow_logger, f"Stream result keys: {list(result.keys())}")
+        # Debug: print what we got back
+        print(f"\n🔍 DEBUG generate_stream result keys: {list(result.keys())}")
+        print(f"📌 clarification_message: {result.get('clarification_message')}")
+        print(f"📌 semantic_chitchat: {result.get('semantic_chitchat')}")
 
         # Handle clarification if needed
         clarification_msg = result.get("clarification_message")
         if clarification_msg:
-            log_debug(workflow_logger, "Clarification detected")
+            print(f"✅ Clarification detected, returning: {clarification_msg[:100]}...")
             final_response = clarification_msg
         else:
-            log_debug(workflow_logger, "Using formatted response")
+            print(f"📄 No clarification, using formatted response")
             final_response = result.get("formatted", {}).get("formatted_response", "")
             if not final_response:
-                log_debug(workflow_logger, f"No formatted response, result keys: {result.keys()}")
+                print(f"⚠️ No formatted response, result keys: {result.keys()}")
 
         chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created_time = int(time.time())
@@ -337,7 +334,6 @@ def generate_stream(user_query, langchain_messages, user_id, session_id, model):
 # ---------- Run Flask ----------
 if __name__ == "__main__":
     print("\n🚀 Starting LangGraph RAG Server...")
-    print(f"📊 Log Level: {LOG_LEVEL} (set LOG_LEVEL env var to change: DEBUG, INFO, WARNING, ERROR, CRITICAL)")
     print("💡 POST → http://localhost:5001/chat")
     print('   {"question": "your question", "session_id": "user123"}')
     print("\n💡 POST → http://localhost:5001/v1/chat/completions (LibreChat)")

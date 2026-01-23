@@ -9,7 +9,6 @@ from models import AmbiguityInfo, IntentClassification, SemanticOutput, Pipeline
 import config
 import json
 from memory_store import store  # <-- your PostgresStore
-from logging_config import semantic_logger, log_section, log_subsection, log_info, log_debug
 
 
 
@@ -119,7 +118,9 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
     and go directly to Step 2C (semantic enrichment) using clarification response.
     """
 
-    log_section(semantic_logger, "SEMANTIC NODE")
+    print("\n" + "=" * 70)
+    print("🧠 SEMANTIC NODE")
+    print("=" * 70)
 
     user_query = state.user_query
     user_id = state.user_id
@@ -127,9 +128,12 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
     awaiting_clarification = state.awaiting_clarification
     previous_ambiguity = state.previous_ambiguity
 
-    log_info(semantic_logger, f"Query: {user_query}")
-    log_debug(semantic_logger, f"User ID: {user_id}")
-    log_debug(semantic_logger, f"Clarification Mode: {awaiting_clarification}")
+    print(f"Query: {user_query}")
+    print(f"User ID: {user_id}")
+    print(f"Clarification Mode: {awaiting_clarification}")
+    if awaiting_clarification and previous_ambiguity:
+        print(f"Previous Entity: {previous_ambiguity.entity}")
+        print(f"Previous Options: {[opt.label for opt in previous_ambiguity.options[:5]]}")
     
     # Step 1: Load user memories from PostgresStore
     try:
@@ -138,15 +142,15 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
             query=None,
             limit=10
         )
-        log_debug(semantic_logger, f"Loaded {len(user_memories)} user memories")
+        print(f"📚 Loaded {len(user_memories)} user memories")
     except Exception as e:
-        log_debug(semantic_logger, f"Could not load memories: {e}")
+        print(f"⚠️ Could not load memories: {e}")
         user_memories = []
 
     # Get chat history
     chat_history = messages
     if chat_history:
-        log_debug(semantic_logger, f"Chat History: {len(messages)} messages available")
+        print(f"📜 Chat History: {len(messages)} messages available")
 
     # Format user memories for prompt
     memories_text = ""
@@ -165,10 +169,15 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
     # ========================================================================
 
     if awaiting_clarification and previous_ambiguity:
-        log_subsection(semantic_logger, "🔄 CLARIFICATION RESPONSE DETECTED")
-        log_info(semantic_logger, f"Response: '{user_query}'")
-        log_info(semantic_logger, f"Previous ambiguity: {previous_ambiguity.entity}")
-        log_info(semantic_logger, "→ Skipping intent classification, going to semantic enrichment")
+        print("\n" + "-" * 70)
+        print("🔄 CLARIFICATION RESPONSE DETECTED")
+        print("-" * 70)
+        print(f"✅ User responded to clarification with: '{user_query}'")
+        print(f"✅ Previous ambiguity: {previous_ambiguity.entity}")
+        print(f"✅ Options were: {[opt.label for opt in previous_ambiguity.options]}")
+        print("➡️  SKIPPING INTENT CLASSIFICATION")
+        print("➡️  ROUTING DIRECTLY TO SEMANTIC ENRICHMENT (STEP 2C)")
+        print("-" * 70)
 
         # Skip to Step 2C (semantic enrichment) with clarification context
         # Set a flag to indicate we're in clarification mode
@@ -182,7 +191,9 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         # STEP 1: INTENT CLASSIFICATION (Agentic, with chat history access)
         # ========================================================================
 
-        log_subsection(semantic_logger, "STEP 1: Intent Classification")
+        print("\n" + "-" * 70)
+        print("STEP 1: Intent Classification")
+        print("-" * 70)
 
         llm = create_llm()
 
@@ -226,8 +237,9 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         llm_structured = llm.with_structured_output(IntentClassification, method="function_calling")
         intent: IntentClassification = llm_structured.invoke(intent_messages)
 
-        log_info(semantic_logger, f"Intent: {intent.intent_type} (confidence: {intent.confidence:.2f})", "✅")
-        log_debug(semantic_logger, f"Reasoning: {intent.reasoning}")
+        print(f"✅ Intent: {intent.intent_type}")
+        print(f"   Confidence: {intent.confidence:.2f}")
+        print(f"   Reasoning: {intent.reasoning}")
     
     # Track new messages for state
     all_new_messages = []
@@ -237,7 +249,9 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
     # ========================================================================
 
     if intent.intent_type == "chitchat":
-        log_subsection(semantic_logger, "STEP 2A: Chitchat Response")
+        print("\n" + "-" * 70)
+        print("STEP 2A: Chitchat Response Generation")
+        print("-" * 70)
         
         # Agentic chitchat with chat history
         chitchat_prompt_template = ChatPromptTemplate.from_messages([
@@ -263,7 +277,7 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         chitchat_response = llm.invoke(chitchat_messages)
         friendly_message = safe_utf8(chitchat_response.content)
 
-        log_info(semantic_logger, f"Response: {friendly_message}", "💬")
+        print(f"💬 Chitchat Response: {friendly_message}")
         
         # Store the chitchat exchange
         chitchat_ai_message = AIMessage(
@@ -292,7 +306,9 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
     # ========================================================================
 
     elif intent.intent_type == "direct":
-        log_subsection(semantic_logger, "STEP 2B: Direct Question")
+        print("\n" + "-" * 70)
+        print("STEP 2B: Direct Question - Light Enrichment (No Tool)")
+        print("-" * 70)
         
         # Agentic enrichment with chat history
         enrichment_prompt = ChatPromptTemplate.from_messages([
@@ -329,8 +345,8 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         llm_structured = llm.with_structured_output(SemanticOutput, method="function_calling")
         output: SemanticOutput = llm_structured.invoke(enrichment_messages)
 
-        log_info(semantic_logger, f"Enriched: {output.enriched_query}", "✅")
-        log_debug(semantic_logger, f"Reasoning: {output.reasoning}")
+        print(f"✅ Enriched Query: {output.enriched_query}")
+        print(f"   Reasoning: {output.reasoning}")
         
         # Store reasoning
         if output.reasoning:
@@ -359,7 +375,9 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
     # ========================================================================
 
     else:  # intent.intent_type == "semantic"
-        log_subsection(semantic_logger, "STEP 2C: Semantic Enrichment")
+        print("\n" + "-" * 70)
+        print("STEP 2C: Semantic Enrichment - Full Tool Loop")
+        print("-" * 70)
 
         # Bind tools for semantic search
         tools = [azure_ai_search]
@@ -496,7 +514,7 @@ IMPORTANT:
         response = None
         
         for iteration in range(max_iterations):
-            log_debug(semantic_logger, f"Iteration {iteration + 1}")
+            print(f"\n--- Iteration {iteration + 1} ---")
 
             response = llm_with_tools.invoke(agent_messages)
 
@@ -506,7 +524,7 @@ IMPORTANT:
 
             # Check if there are tool calls
             if response.tool_calls:
-                log_debug(semantic_logger, f"Tool calls: {len(response.tool_calls)}")
+                print(f"🔧 Tool calls: {len(response.tool_calls)}")
 
                 # Add AI message with tool calls
                 agent_messages.append(response)
@@ -525,12 +543,15 @@ IMPORTANT:
             else:
                 # No more tool calls, we have the final response
                 all_new_messages.append(response)
-                log_debug(semantic_logger, "Final response received")
+                print("✅ Final response received")
                 break
         
         raw_output = response.content if response else ""
 
-        log_debug(semantic_logger, f"Raw output: {raw_output[:200]}...")
+        print("\n📄 SEMANTIC AGENT RAW OUTPUT:")
+        print("=" * 70)
+        print(raw_output[:500] + "..." if len(raw_output) > 500 else raw_output)
+        print("=" * 70)
 
         # Parse with structured output
         llm_structured = create_llm().with_structured_output(
@@ -545,16 +566,19 @@ IMPORTANT:
                 metadata={"type": "internal_reasoning", "node": "semantic"}
             )
             all_new_messages.append(reasoning_message)
-            log_debug(semantic_logger, f"Reasoning: {reasoning_message.content[:200]}...")
 
-        log_info(semantic_logger, f"Enriched: {output.enriched_query}", "✅")
-        log_info(semantic_logger, f"Ambiguous: {output.ambiguity_detected.ambiguous}")
+            print("\n📌 Internal Reasoning Message to store:")
+            print(reasoning_message.content[:500] + "..." if len(reasoning_message.content) > 500 else reasoning_message.content)
+
+        print(f"\n✅ STRUCTURED OUTPUT:")
+        print(f"   Enriched: {output.enriched_query}")
+        print(f"   Ambiguous: {output.ambiguity_detected.ambiguous}")
 
         if output.ambiguity_detected.ambiguous:
-            log_info(semantic_logger, f"Entity: {output.ambiguity_detected.entity}")
-            log_info(semantic_logger, f"Options: {len(output.ambiguity_detected.options)}")
-            for opt in output.ambiguity_detected.options[:3]:
-                log_debug(semantic_logger, f"  - {opt.label}")
+            print(f"   Entity: {output.ambiguity_detected.entity}")
+            print(f"   Options: {len(output.ambiguity_detected.options)}")
+            for opt in output.ambiguity_detected.options[:5]:
+                print(f"      - {opt.label}")
         
         # Return state updates
         return {

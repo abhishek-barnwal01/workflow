@@ -6,7 +6,6 @@ from azure.core.credentials import AzureKeyCredential
 from openai import AzureOpenAI
 import config
 import json
-from logging_config import tools_logger, log_debug, log_warning
 
 
 def get_embedding(text: str) -> list:
@@ -25,7 +24,7 @@ def get_embedding(text: str) -> list:
         
         return response.data[0].embedding
     except Exception as e:
-        log_debug(tools_logger, f"Embedding error: {e}")
+        print(f"   ⚠️ Embedding error: {e}")
         return None
 
 
@@ -48,7 +47,10 @@ def azure_ai_search(query: str, index_type: str, top_k: int) -> str:
         else config.SEMANTIC_INDEX_NAME
     )
 
-    log_debug(tools_logger, f"azure_ai_search: {index_type}, query='{query[:50]}...', top_k={top_k}")
+    print(f"\n🔍 TOOL CALL: azure_ai_search (HYBRID)")
+    print(f"   Query: {query}")
+    print(f"   Index: {index_type} ({index_name})")
+    print(f"   Top K: {top_k}")
     
     try:
         client = SearchClient(
@@ -75,9 +77,9 @@ def azure_ai_search(query: str, index_type: str, top_k: int) -> str:
                 fields="content_embedding"
             )
             search_kwargs["vector_queries"] = [vector_query]
-            log_debug(tools_logger, "Using hybrid search (keyword + vector)")
+            print(f"   ✓ Using hybrid search (keyword + vector)")
         else:
-            log_debug(tools_logger, "Using keyword-only search (embedding failed)")
+            print(f"   ⚠️ Using keyword-only search (embedding failed)")
         
         # Perform search
         results = client.search(**search_kwargs)
@@ -103,9 +105,17 @@ def azure_ai_search(query: str, index_type: str, top_k: int) -> str:
         
         avg_score = sum(scores) / len(scores) if scores else 0.0
 
-        log_debug(tools_logger, f"Found {len(docs)} docs (avg score: {avg_score:.2f})")
+        print(f"   ✓ Found {len(docs)} docs (avg score: {avg_score:.2f})")
         if docs:
-            log_debug(tools_logger, f"Top result: {docs[0]['source']} (score: {docs[0]['score']:.2f})")
+            print(f"   📄 Top result: {docs[0]['source']} (score: {docs[0]['score']:.2f})")
+            print(f"   📝 Preview: {docs[0]['content'][:100]}...")
+
+        # Show top 3 results for visibility
+        if len(docs) > 1:
+            print(f"\n   📋 Top {min(3, len(docs))} Results:")
+            for i, doc in enumerate(docs[:3]):
+                print(f"      {i+1}. {doc['source']} (score: {doc['score']:.2f})")
+                print(f"         {doc['content'][:80]}...")
         
         return json.dumps({
             "docs": docs,
@@ -119,9 +129,9 @@ def azure_ai_search(query: str, index_type: str, top_k: int) -> str:
         })
     
     except Exception as e:
-        log_warning(tools_logger, f"Search error: {e}")
+        print(f"   ✗ Error: {e}")
         import traceback
-        log_debug(tools_logger, traceback.format_exc())
+        traceback.print_exc()
         return json.dumps({
             "docs": [],
             "metadata": {

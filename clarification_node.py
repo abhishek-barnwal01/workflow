@@ -1,7 +1,6 @@
 # clarification_node.py
 from models import PipelineState
 from typing import Dict, Any
-from logging_config import clarification_logger, log_info
 
 def clarification_node(state: PipelineState) -> Dict[str, Any]:
     ambiguity = state.ambiguity_detected
@@ -21,7 +20,15 @@ def clarification_node(state: PipelineState) -> Dict[str, Any]:
     options_text = "\n".join([f"{i+1}. {opt.label}" for i, opt in enumerate(ambiguity.options)])
     message = f"I found multiple {ambiguity.entity}. Please clarify which one you mean:\n{options_text}\nYou can also reply 'ALL' to select all options."
 
-    log_info(clarification_logger, f"Clarification requested: {ambiguity.entity} ({len(ambiguity.options)} options)", "📌")
+    print(f"\n📌 Clarification Node sending message:")
+    print(f"   Entity: {ambiguity.entity}")
+    print(f"   Options: {len(ambiguity.options)}")
+    for i, opt in enumerate(ambiguity.options[:5]):
+        print(f"      {i+1}. {opt.label}")
+    if len(ambiguity.options) > 5:
+        print(f"      ... and {len(ambiguity.options) - 5} more")
+    print(f"\n   Setting awaiting_clarification = True")
+    print(f"   Storing previous_ambiguity for next turn")
 
     # Append AI clarification to messages so it gets stored
     messages = state.messages + [{"type": "assistant", "content": message}]

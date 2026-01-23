@@ -2,7 +2,7 @@
 
 ## Summary
 
-This document describes the improvements made to the RAG workflow to fix intent detection, clarification response routing, and logging verbosity.
+This document describes the improvements made to the RAG workflow to fix intent detection and clarification response routing.
 
 ## Changes Made
 
@@ -47,93 +47,108 @@ This document describes the improvements made to the RAG workflow to fix intent 
 → Clears `awaiting_clarification` flag
 → Proceeds to RAG node
 
-### 2. **Logging Configuration** ✅
+### 2. **Terminal Output** ✅
 
-**Problem**: Terminal logs were extremely verbose with all tool calls, iterations, and debugging information displayed.
+**Design Decision**: Full detailed flow visible in terminal by default.
 
-**Solution**: Implemented a proper logging system with configurable log levels.
+Terminal shows:
+- All workflow steps with clear section headers
+- Intent classification with reasoning
+- Tool calls with full query details
+- Search results with top 3 matches
+- Document previews
+- Ambiguity detection
+- Clarification tracking
+- Query enrichment process
 
-#### Implementation Details:
-
-- **Created `logging_config.py`**:
-  - Configurable log levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
-  - Environment variable: `LOG_LEVEL` (default: INFO)
-  - Module-specific loggers: semantic, rag, tools, clarification, formatter
-  - Helper functions: `log_section`, `log_subsection`, `log_info`, `log_debug`, etc.
-
-- **Updated all modules** to use logging:
-  - `semantic_node.py`: Uses `semantic_logger`
-  - `tools.py`: Uses `tools_logger`
-  - `clarification_node.py`: Uses `clarification_logger`
-  - `app.py`: Uses `workflow_logger`
-
-#### Usage:
-
-```bash
-# Default (INFO level - shows main operations)
-python app.py
-
-# Debug mode (shows all details including tool calls)
-LOG_LEVEL=DEBUG python app.py
-
-# Quiet mode (only warnings and errors)
-LOG_LEVEL=WARNING python app.py
-```
-
-#### Log Output Comparison:
-
-**Before** (Always verbose):
+**Example Output**:
 ```
 ======================================================================
-🧠 SEMANTIC NODE - TWO STEP APPROACH
+🧠 SEMANTIC NODE
 ======================================================================
 Query: how many u&A reports are there?
 User ID: 691c041a052a1a153880f7b3
+Clarification Mode: False
 📚 Loaded 0 user memories
 📜 Chat History: 10 messages available
+
 ----------------------------------------------------------------------
 STEP 1: Intent Classification
 ----------------------------------------------------------------------
 ✅ Intent: semantic
    Confidence: 0.86
    Reasoning: The question asks for the number of "u&A reports"...
+
 ----------------------------------------------------------------------
 STEP 2C: Semantic Enrichment - Full Tool Loop
 ----------------------------------------------------------------------
+
 --- Iteration 1 ---
 🔧 Tool calls: 1
+
 🔍 TOOL CALL: azure_ai_search (HYBRID)
    Query: U&A reports Usage & Attitude reports count...
    Index: semantic (semantic-rag-1767864275169)
    Top K: 50
    ✓ Using hybrid search (keyword + vector)
    ✓ Found 39 docs (avg score: 0.02)
-   📄 Top result: None (score: 0.03)
+   📄 Top result: Semantic_file_document_taxonomy.md (score: 0.03)
    📝 Preview: Semantic_file_document_taxonomy.md...
+
+   📋 Top 3 Results:
+      1. Semantic_file_document_taxonomy.md (score: 0.03)
+         | Brand | Brand equity...
+      2. Semantic_file_document_category.md (score: 0.03)
+         | Dipstick | Dipstick report...
+      3. Another_file.md (score: 0.02)
+         Content preview...
+
+✅ STRUCTURED OUTPUT:
+   Enriched: Count of Usage & Attitude (U&A) consumer insight reports...
+   Ambiguous: True
+   Entity: u_and_a_report_category
+   Options: 8
+      - Dipstick report
+      - Brand equity report
+      - Concept testing report
+      - Link testing report
+      - Product testing report
+
+📌 Clarification Node sending message:
+   Entity: u_and_a_report_category
+   Options: 8
+      1. Dipstick report
+      2. Brand equity report
+      3. Concept testing report
+      4. Link testing report
+      5. Product testing report
+
+   Setting awaiting_clarification = True
+   Storing previous_ambiguity for next turn
 ```
 
-**After** (INFO level - concise):
+**When User Responds**:
 ```
 ======================================================================
 🧠 SEMANTIC NODE
 ======================================================================
-Query: how many u&A reports are there?
-----------------------------------------------------------------------
-STEP 1: Intent Classification
-----------------------------------------------------------------------
-✅ Intent: semantic (confidence: 0.86)
-----------------------------------------------------------------------
-STEP 2C: Semantic Enrichment
-----------------------------------------------------------------------
-✅ Enriched: Count of Usage & Attitude (U&A) consumer insight reports...
-Ambiguous: True
-Entity: u_and_a_report_category
-Options: 8
-```
+Query: 1
+User ID: 691c041a052a1a153880f7b3
+Clarification Mode: True
+Previous Entity: u_and_a_report_category
+Previous Options: ['Dipstick report', 'Brand equity report', ...]
 
-**After** (DEBUG level - detailed):
-```
-[Shows everything including tool calls, iterations, reasoning, etc.]
+----------------------------------------------------------------------
+🔄 CLARIFICATION RESPONSE DETECTED
+----------------------------------------------------------------------
+✅ User responded to clarification with: '1'
+✅ Previous ambiguity: u_and_a_report_category
+✅ Options were: ['Dipstick report', 'Brand equity report', ...]
+➡️  SKIPPING INTENT CLASSIFICATION
+➡️  ROUTING DIRECTLY TO SEMANTIC ENRICHMENT (STEP 2C)
+----------------------------------------------------------------------
+
+[Continues with enrichment...]
 ```
 
 ### 3. **Intent Detection Logic** ✅
@@ -247,37 +262,14 @@ I found multiple soap brands. Please clarify which one you mean:
 - Passes to RAG with ambiguity=false
 - Returns definition from documents or general knowledge
 
-## Configuration
-
-### Environment Variables
-
-```bash
-# Logging level (default: INFO)
-export LOG_LEVEL=DEBUG  # or INFO, WARNING, ERROR, CRITICAL
-
-# Existing Azure configs
-export AZURE_OPENAI_DEPLOYMENT=...
-export AZURE_OPENAI_ENDPOINT=...
-# ... etc
-```
-
-### Log Levels
-
-- **DEBUG**: Shows all details (tool calls, iterations, reasoning, embeddings, etc.)
-- **INFO**: Shows main operations (intent, enrichment, clarification, RAG results)
-- **WARNING**: Shows only warnings and errors
-- **ERROR**: Shows only errors
-- **CRITICAL**: Shows only critical failures
-
 ## Files Modified
 
 ### Core Changes:
 1. `models.py` - Added `awaiting_clarification` and `previous_ambiguity` to `PipelineState`
-2. `semantic_node.py` - Added clarification detection and skip logic
-3. `clarification_node.py` - Set/clear clarification flags
-4. `logging_config.py` - **NEW FILE** - Logging configuration
-5. `tools.py` - Updated to use logging
-6. `app.py` - Added logging configuration and log level environment variable
+2. `semantic_node.py` - Added clarification detection and skip logic, detailed print output
+3. `clarification_node.py` - Set/clear clarification flags, detailed print output
+4. `tools.py` - Detailed print output showing search results
+5. `app.py` - Simple debug prints
 
 ### No Changes Required:
 - `graph.py` - Routing logic already works correctly
@@ -292,26 +284,24 @@ export AZURE_OPENAI_ENDPOINT=...
 
 ### New Features
 1. Clarification responses now skip intent re-classification
-2. Configurable logging levels via `LOG_LEVEL` environment variable
-3. Cleaner terminal output by default (INFO level)
+2. Full detailed flow visible in terminal
+3. Tool retrieval details shown with top results
 
 ### Recommended Actions
-1. Set `LOG_LEVEL=INFO` in production for clean logs
-2. Set `LOG_LEVEL=DEBUG` during development for detailed debugging
-3. Test clarification flows with your specific use cases
+1. Test clarification flows with your specific use cases
+2. Monitor terminal output for workflow understanding
 
 ## Future Improvements
 
 1. **Multi-turn clarification**: Handle nested clarifications (e.g., "which Lux? Lux Soap or Lux Shampoo?")
 2. **Clarification history**: Store clarification decisions for future queries
 3. **Smart defaults**: Learn user preferences to avoid repeated clarifications
-4. **Structured logging**: Add JSON logging for better log aggregation
-5. **Performance metrics**: Log query processing time, token usage, etc.
+4. **Performance metrics**: Log query processing time, token usage, etc.
 
 ## Questions & Support
 
 For issues or questions:
-1. Check the logs with `LOG_LEVEL=DEBUG`
+1. Check the terminal logs for full workflow details
 2. Verify the state flags: `awaiting_clarification`, `previous_ambiguity`
 3. Check the message history to understand the flow
 4. Review this document for expected behavior
@@ -319,5 +309,5 @@ For issues or questions:
 ---
 
 **Last Updated**: 2026-01-23
-**Version**: 1.0
+**Version**: 2.0
 **Author**: Claude Code
