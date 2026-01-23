@@ -9,8 +9,8 @@ from langgraph.graph import add_messages
 # -------------------------
 class IntentClassification(BaseModel):
     model_config = {"extra": "forbid"}
-    
-    intent_type: Literal["chitchat", "direct", "semantic"]
+
+    intent_type: Literal["chitchat", "direct", "semantic_specific", "semantic_broad"]
     reasoning: str
     confidence: float = Field(ge=0, le=1)
 

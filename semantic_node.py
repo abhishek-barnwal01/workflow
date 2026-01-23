@@ -176,14 +176,14 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         print(f"✅ Previous ambiguity: {previous_ambiguity.entity}")
         print(f"✅ Options were: {[opt.label for opt in previous_ambiguity.options]}")
         print("➡️  SKIPPING INTENT CLASSIFICATION")
-        print("➡️  ROUTING DIRECTLY TO SEMANTIC ENRICHMENT (STEP 2C)")
+        print("➡️  ROUTING DIRECTLY TO SEMANTIC ENRICHMENT (STEP 2D)")
         print("-" * 70)
 
-        # Skip to Step 2C (semantic enrichment) with clarification context
+        # Skip to Step 2D (semantic_broad enrichment) with clarification context
         # Set a flag to indicate we're in clarification mode
         intent = IntentClassification(
-            intent_type="semantic",
-            reasoning="User responding to clarification question - routing directly to semantic enrichment",
+            intent_type="semantic_broad",
+            reasoning="User responding to clarification question - routing directly to semantic enrichment with tool",
             confidence=1.0
         )
     else:
@@ -199,7 +199,7 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
 
         # Create prompt with MessagesPlaceholder for automatic chat history injection
         intent_prompt_template = ChatPromptTemplate.from_messages([
-            ("system", """You are an intent classifier for an enterprise RAG system.
+            ("system", """You are an advanced intent classifier for an enterprise RAG system.
 
         Classify the user's query into ONE of these categories:
 
@@ -209,22 +209,68 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
 
         2. **direct**: Simple general knowledge questions that don't require company documents
         - Examples: "what is GDP", "define market share", "explain EBITDA", "what is ROI"
-        - Characteristics: Definitional, general concepts, no possessive pronouns (our/my)
+        - Characteristics: Definitional, general concepts, no company-specific data needed
         - Action: Enrich query with context, pass to RAG without semantic tool
 
-        3. **semantic**: Domain-specific questions requiring company document search
-        - Examples: "what is OUR market share", "show Q3 sales", "compare regions", "all products"
-        - Characteristics: References company data, uses possessive pronouns, mentions entities
-        - Action: Use semantic search tool to find entities and detect ambiguity
+        3. **semantic_specific**: Specific, targeted questions about known entities or facts
+        - Examples: "what is Lux market share in Q3", "show Godrej No.1 sales value growth", "Nielsen IQ data for soap category"
+        - Characteristics:
+          * Question mentions SPECIFIC entities (brand names, products, metrics, reports, time periods)
+          * User knows EXACTLY what they're looking for
+          * Question is NARROW and FOCUSED on particular data points
+          * Not exploratory or open-ended
+        - Action: Modify query for RAG search - DO NOT use semantic AI search tool
+
+        4. **semantic_broad**: High-level, exploratory questions requiring entity discovery
+        - Examples: "what products do we have", "show all regions", "compare all brands", "what are our top segments"
+        - Characteristics:
+          * Question is OPEN-ENDED or EXPLORATORY
+          * User wants to DISCOVER available entities/options
+          * Uses words like "all", "what", "which", "list", "show me"
+          * Question is BROAD and requires UNDERSTANDING the domain first
+          * May have AMBIGUITY that needs resolution (e.g., "soap" could mean multiple brands)
+        - Action: Use semantic AI search tool to discover entities and detect ambiguities
+
+        CRITICAL DECISION LOGIC:
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+        Ask yourself these questions in order:
+
+        Q1: "Does the user mention SPECIFIC entities/brands/products/reports by name?"
+            YES → Likely semantic_specific
+            NO → Continue to Q2
+
+        Q2: "Is the question EXPLORATORY or asking to DISCOVER/LIST options?"
+            YES → semantic_broad
+            NO → Continue to Q3
+
+        Q3: "Could there be AMBIGUITY that needs resolution before answering?"
+            YES → semantic_broad
+            NO → semantic_specific
+
+        Q4: "Is this a BROAD question like 'show all X' or 'what products/regions/brands'?"
+            YES → semantic_broad
+            NO → semantic_specific
+        ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+        EXAMPLES TO LEARN FROM:
+        ✓ "What is Lux market share?" → semantic_specific (specific brand mentioned)
+        ✓ "Show GN1 sales in MAT Dec'22" → semantic_specific (specific brand + time period)
+        ✓ "Nielsen IQ RMS data for soap" → semantic_specific (specific source + category)
+
+        ✗ "What is our market share for soap?" → semantic_broad (ambiguous - which brand?)
+        ✗ "Show all products" → semantic_broad (exploratory - discovering options)
+        ✗ "Compare regions" → semantic_broad (open-ended - which regions?)
+        ✗ "What brands do we have?" → semantic_broad (discovery question)
 
         IMPORTANT:
         - Check chat history BELOW to understand context
         - Use conversation flow to inform classification
         - A follow-up question may reference previous context
+        - When in doubt between semantic_specific and semantic_broad, prefer semantic_specific if ANY specific entity is mentioned
 
-        Analyze the query and return your classification with reasoning."""),
+        Analyze the query and return your classification with detailed reasoning."""),
             MessagesPlaceholder("messages"),  # Chat history auto-injected here
-            ("human", "Query: {user_query}\n\nClassify this query's intent.")
+            ("human", "Query: {user_query}\n\nClassify this query's intent using the decision logic above.")
         ])
 
         # Format messages with chat history
@@ -415,13 +461,113 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         }
     
     # ========================================================================
-    # STEP 2C: SEMANTIC - Full tool-calling loop with ambiguity detection
+    # STEP 2C: SEMANTIC_SPECIFIC - Query modification without AI search tool
     # ========================================================================
 
-    else:  # intent.intent_type == "semantic"
+    elif intent.intent_type == "semantic_specific":
         print("\n" + "-" * 70)
-        print("STEP 2C: Semantic Enrichment - Full Tool Loop")
+        print("STEP 2C: Semantic Specific - Query Modification (No AI Search Tool)")
         print("-" * 70)
+        print("ℹ️  User knows exactly what they want - specific entities mentioned")
+        print("ℹ️  Modifying query for RAG node - RAG will handle the search")
+
+        # Agentic enrichment with chat history but NO TOOLS
+        enrichment_prompt = ChatPromptTemplate.from_messages([
+            ("system", """You are a query enrichment agent for specific, targeted questions.
+
+    The user has asked a SPECIFIC question with clear entities/facts mentioned.
+    Your job is to:
+    1. Rephrase the query to be clear and well-structured for RAG search
+    2. Add any helpful context from chat history if available
+    3. Preserve all specific entity names, brands, metrics, time periods mentioned
+    4. Do NOT search for entities - the query is already specific enough
+    5. Do NOT mark as ambiguous - pass this to RAG for direct search
+
+    The RAG node will handle the actual document search using its own tools.
+
+    Return JSON with:
+    {{
+    "enriched_query": "clear, specific version of the query preserving all entity names",
+    "domain_context": {{"query_type": "specific", "entities_mentioned": ["list of entities"]}},
+    "ambiguity_detected": {{
+        "ambiguous": false,
+        "entity": null,
+        "options": [],
+        "reason": null
+    }},
+    "reasoning": "brief explanation of how you enriched the query"
+    }}
+
+    CRITICAL:
+    - ambiguous MUST be false (this is a specific query)
+    - options MUST be empty array []
+    - Preserve exact entity names from user query"""),
+            MessagesPlaceholder("messages"),  # Chat history auto-injected
+            ("human", "Query: {user_query}\n\nEnrich this specific query for RAG search.")
+        ])
+
+        enrichment_messages = enrichment_prompt.format_messages(
+            messages=chat_history,
+            user_query=user_query
+        )
+
+        llm_structured = llm.with_structured_output(SemanticOutput, method="function_calling")
+
+        try:
+            output: SemanticOutput = llm_structured.invoke(enrichment_messages)
+        except Exception as e:
+            # Handle content filter or other API errors
+            error_msg = str(e)
+            print(f"⚠️ LLM Error: {error_msg[:200]}")
+            if "content_filter" in error_msg.lower() or "jailbreak" in error_msg.lower():
+                print("   Content filter triggered - using fallback enrichment")
+                # Fallback: just use the original query
+                output = SemanticOutput(
+                    enriched_query=user_query,
+                    domain_context={"query_type": "specific"},
+                    ambiguity_detected=AmbiguityInfo(ambiguous=False),
+                    reasoning="Content filter triggered, using original query without enrichment"
+                )
+            else:
+                # Re-raise other errors
+                raise
+
+        print(f"✅ Enriched Query: {output.enriched_query}")
+        print(f"   Reasoning: {output.reasoning}")
+        print("➡️  Passing to RAG node for document search")
+
+        # Store reasoning
+        if output.reasoning:
+            reasoning_message = AIMessage(
+                content=safe_utf8(output.reasoning),
+                metadata={"type": "internal_reasoning", "node": "semantic"}
+            )
+            all_new_messages.append(reasoning_message)
+
+        return {
+            "messages": sanitize_any(all_new_messages),
+            "user_memories": sanitize_any(user_memories),
+            "clarification_message": None,  # No clarification for specific questions
+            "semantic_chitchat": False,  # Clear the flag - this is not chitchat
+            "awaiting_clarification": False,  # Clear clarification flag
+            "previous_ambiguity": None,  # Clear previous ambiguity
+            "enriched_query": safe_utf8(output.enriched_query),
+            "domain_context": sanitize_any(output.domain_context),
+            "ambiguity_detected": sanitize_any(
+                output.ambiguity_detected.model_dump()
+            ),
+        }
+
+    # ========================================================================
+    # STEP 2D: SEMANTIC_BROAD - Full tool-calling loop with ambiguity detection
+    # ========================================================================
+
+    else:  # intent.intent_type == "semantic_broad"
+        print("\n" + "-" * 70)
+        print("STEP 2D: Semantic Broad - Full AI Search Tool Loop")
+        print("-" * 70)
+        print("ℹ️  High-level/exploratory question - using AI search to discover entities")
+        print("ℹ️  Will detect ambiguities and ask for clarification if needed")
 
         # Bind tools for semantic search
         tools = [azure_ai_search]
@@ -460,14 +606,25 @@ Example:
 
         # Create prompt template with tool usage instructions
         prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a semantic enrichment agent.
+            ("system", """You are a semantic enrichment agent for HIGH-LEVEL, EXPLORATORY queries.
 {clarification_context}
 
-Use the azure_ai_search tool to search the SEMANTIC index for entity values and business context.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+YOUR MISSION: Use the azure_ai_search tool to DISCOVER entities and detect ambiguities
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+You are handling a BROAD/EXPLORATORY query that needs entity discovery.
+The user wants to:
+- Discover what options are available (e.g., "what products do we have")
+- Get an overview (e.g., "compare all regions")
+- Resolve ambiguity (e.g., "market share of soap" - which soap brand?)
+
+USE THE TOOL to search the SEMANTIC index for entity values and business context.
+
 You autonomously decide:
-- What to search for
-- How many results (top_k: 10-100)
-- If you need multiple searches
+- What to search for (entities, categories, metrics)
+- How many results to retrieve (top_k: 10-100)
+- If you need multiple searches to fully understand the domain
 
 ----
 CONVERSATION HISTORY (Chat history - automatically injected below)
@@ -479,72 +636,77 @@ You have access to the full conversation history below. Use it to:
 - Avoid asking for clarification if context is already clear
 - Reference previous responses and tool calls
 
----
-STEP 1: Search for relevant entities
----
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WORKFLOW STEPS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Call: azure_ai_search(query="relevant search terms", index_type="semantic", top_k=?)
+STEP 1: SEARCH FOR ENTITIES
+Call the tool to discover available entities:
+    azure_ai_search(query="relevant search terms", index_type="semantic", top_k=?)
 
----
+You can call the tool MULTIPLE TIMES if needed to fully understand the domain.
+
 STEP 2: CHECK CHAT HISTORY FIRST (CRITICAL)
----
 BEFORE marking anything as ambiguous:
 1. READ the chat history carefully (available below current message)
 2. If previous conversation provides context → USE IT, NOT ambiguous
 3. If user says "ALL" or "all of them" → Include all options, NOT ambiguous
 4. Only mark ambiguous if: multiple values exist AND no context in history
 
----
-STEP 3: Extract options from search results
----
-READ the content returned by the tool and extract specific values.
+STEP 3: EXTRACT OPTIONS FROM SEARCH RESULTS
+READ the content returned by the tool and extract specific entity values.
 
 If multiple values exist AND no context resolves them:
-- ambiguity_detected.ambiguous = true
-- ambiguity_detected.options MUST be populated
+✓ ambiguity_detected.ambiguous = true
+✓ ambiguity_detected.entity = "the entity name (e.g., 'brand', 'product')"
+✓ ambiguity_detected.options MUST be populated with all discovered options
+✓ ambiguity_detected.reason = "explain why clarification is needed"
 
 Each option MUST be structured as:
 {{
-  "label": "Display Name",
-  "value": "lowercase_underscore_value"
+  "label": "Display Name (e.g., 'Lux')",
+  "value": "lowercase_underscore_value (e.g., 'lux')"
 }}
 
----
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 OUTPUT REQUIREMENTS
----
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 You MUST return ONLY valid JSON in this exact structure:
 
 {{
-  "enriched_query": "string",
-  "domain_context": {{}},
+  "enriched_query": "enriched version of the query with discovered entities",
+  "domain_context": {{"discovered_entities": ["list of discovered entities"]}},
   "ambiguity_detected": {{
-    "ambiguous": false,
+    "ambiguous": false or true,
     "entity": "string or null",
     "options": [],
     "reason": "string or null"
   }},
-  "reasoning": "string"
+  "reasoning": "explain your search strategy and findings"
 }}
 
----
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CRITICAL RULES
----
-- If ambiguous = true → options MUST NOT be empty
-- If options is empty → ambiguous MUST be false
-- If ambiguous = false → options MUST be an empty array []
-- If ambiguity is resolved by history → ambiguous = false
-- If search fails → ambiguous = false and explain in reasoning
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓ If ambiguous = true → options MUST NOT be empty
+✓ If options is empty → ambiguous MUST be false
+✓ If ambiguous = false → options MUST be an empty array []
+✓ If ambiguity is resolved by history → ambiguous = false
+✓ If search fails → ambiguous = false and explain in reasoning
+✓ ALWAYS use the tool at least once - this is a discovery/exploratory query
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """),
             MessagesPlaceholder("messages"),
             ("human", """Query: {user_query}
 
-Task: Enrich this query and determine if clarification is needed.
+Task: Use the azure_ai_search tool to discover entities and enrich this BROAD query.
 
 IMPORTANT:
-1. Check chat history ABOVE before marking ambiguous
-2. Use user memories to provide context
-3. Populate ambiguity_detected.options ONLY inside JSON if required"""),
+1. This is a HIGH-LEVEL query - use the tool to discover entities
+2. Check chat history ABOVE before marking ambiguous
+3. Use user memories to provide context
+4. Populate ambiguity_detected.options if multiple entities found"""),
         ])
         
         # Format initial messages with history

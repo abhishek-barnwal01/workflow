@@ -53,31 +53,119 @@ def formatter_node(state: PipelineState) -> Dict[str, Any]:
     print(f"\n📝 RAG's answer to format ({len(rag_final_answer)} chars)")
     print(f"🔹 Confidence: {confidence:.2f}")
 
-    # ----------------- Full formatting prompt -----------------
+    # ----------------- Production-grade formatting prompt -----------------
     prompt = f"""
-Polish and format the RAG final answer for user consumption.
+You are a professional content formatter for an enterprise RAG system.
 
-User Query: {user_query}
+Your mission: Transform the RAG answer into a PRODUCTION-GRADE, beautifully formatted response using MARKDOWN.
 
-RAG's Answer:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+USER'S QUESTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{user_query}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RAG'S RAW ANSWER (Unformatted)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {rag_final_answer}
 
-Confidence Score: {confidence:.2f}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONFIDENCE SCORE: {confidence:.2f} / 1.00
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Your Job:
-- Make the answer conversational, clear, and user-friendly
-- Add disclaimers if confidence < 0.85
-- Keep core content intact
-- Use proper paragraphs and formatting
-- Optionally highlight key points
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+YOUR FORMATTING INSTRUCTIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Output JSON schema:
+Transform the RAW answer above into a POLISHED, PROFESSIONAL response using these guidelines:
+
+1. **STRUCTURE & SECTIONS**
+   - Start with a brief, direct answer to the question (1-2 sentences)
+   - Use clear section headers with `###` for different topics
+   - Separate distinct concepts into logical sections
+   - Add blank lines between sections for readability
+
+2. **KEY INFORMATION FORMATTING**
+   - **Bold** important numbers, metrics, and key findings
+   - Use bullet points (`-`) for lists of items
+   - Use numbered lists (`1.`) for sequential information or steps
+   - *Italicize* source names, document titles, and time periods
+
+3. **DATA PRESENTATION**
+   - Format percentages clearly: **+16.6% YoY** or **41.6% penetration**
+   - Format comparisons: **Brand A** vs **Brand B**
+   - Use tables (markdown format) when comparing multiple data points
+   - Highlight trends: 📈 for growth, 📉 for decline (optional, only if appropriate)
+
+4. **CITATIONS & SOURCES**
+   - At the end, add a "### Sources" section
+   - List all referenced documents/reports as bullet points
+   - Format: `- *Source Name* (Date or Context)`
+   - Example: `- *Soaps Annual Presentation 2022 - Nielsen IQ RMS*`
+
+5. **CLARITY & READABILITY**
+   - Use short paragraphs (2-4 sentences max)
+   - Break up long walls of text
+   - Use line breaks generously
+   - Make it scannable - readers should quickly find what they need
+
+6. **CONFIDENCE DISCLAIMERS**
+   - If confidence < 0.85: Add a note at the top or bottom
+   - Format: `> ℹ️ **Note:** This answer has moderate confidence. Please verify critical details from the original sources.`
+   - If confidence < 0.65: Be more explicit about uncertainty
+   - Format: `> ⚠️ **Disclaimer:** The confidence in this answer is low. Please review the source documents for accurate information.`
+
+7. **CONVERSATIONAL TONE**
+   - Make it friendly but professional
+   - Use "Based on the data..." or "According to..."
+   - Avoid robotic language - be natural
+
+8. **PRESERVE ACCURACY**
+   - Keep ALL numbers, dates, and facts EXACTLY as provided
+   - Don't add information that wasn't in the RAW answer
+   - Don't remove important details
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EXAMPLE OUTPUT FORMAT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Based on Nielsen IQ RMS data, **Godrej No. 1 achieved +16.6% sales value growth** compared to the previous year in MAT Dec'22.
+
+### Key Insights
+
+- **Sales Performance:** GN1 grew **+16.6% in sales value** year-over-year
+- **Market Position:** Despite Lux having higher penetration (41.6%), GN1 demonstrated stronger volume performance
+- **Consumer Behavior:** GN1 buyers showed higher consumption intensity compared to Lux users
+
+### Market Context
+
+The Kantar household panel data shows complementary insights:
+- **Penetration:** 41.6% (with **+15% YoY growth**)
+- **Average Consumption:** 1.62 gms/HH/month (**+11% YoY growth**)
+
+### Sources
+
+- *Soaps Annual Presentation 2022 - Nielsen IQ RMS*
+- *Toilet Soap Annual Presentation 2022 - Kantar (Feb 22, 2023)*
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NOW FORMAT THE RAW ANSWER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Output your formatted response as JSON:
 {{
-  "formatted_response": "your polished response here",
+  "formatted_response": "your beautifully formatted markdown response here",
   "metadata": {{
     "confidence": {confidence:.2f}
   }}
 }}
+
+REMEMBER:
+- Use markdown formatting extensively
+- Make it look like a professional chat application response
+- Add confidence disclaimer if needed
+- Keep all facts accurate
+- Make it scannable and easy to read
 """
 
     # ----------------- Invoke LLM -----------------
