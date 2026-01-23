@@ -111,6 +111,8 @@ class PipelineState(BaseModel):
     formatted: Optional[FormatterOutput] = None
     semantic_reasoning: Optional[str] = None
     semantic_chitchat: bool = False  # Flag to end flow immediately for chitchat
+    awaiting_clarification: bool = False  # Flag to track if we're waiting for clarification response
+    previous_ambiguity: Optional[AmbiguityInfo] = None  # Store previous ambiguity for context
 
     # 🔹 Add retrieval memory to track docs already fetched (changed to list for JSON compatibility)
     retrieval_memory: Dict[str, List[str]] = Field(

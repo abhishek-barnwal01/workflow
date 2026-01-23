@@ -9,6 +9,7 @@ from models import AmbiguityInfo, IntentClassification, SemanticOutput, Pipeline
 import config
 import json
 from memory_store import store  # <-- your PostgresStore
+from logging_config import semantic_logger, log_section, log_subsection, log_info, log_debug
 
 
 
@@ -107,24 +108,28 @@ def execute_tool_calls(tool_calls: list, tools_map: dict) -> list:
 def semantic_node(state: PipelineState) -> Dict[str, Any]:
     """
     Two-step semantic enrichment node.
-    
+
     Step 1: Intent classification (no tools)
     Step 2: Conditional processing based on intent
         - chitchat: Generate friendly response, end flow
         - direct: Pass enriched query to RAG (no tool)
         - semantic: Full tool-calling loop with ambiguity detection
+
+    CLARIFICATION MODE: If awaiting_clarification is True, skip Step 1
+    and go directly to Step 2C (semantic enrichment) using clarification response.
     """
-    
-    print("\n" + "=" * 70)
-    print("🧠 SEMANTIC NODE - TWO STEP APPROACH")
-    print("=" * 70)
-    
+
+    log_section(semantic_logger, "SEMANTIC NODE")
+
     user_query = state.user_query
     user_id = state.user_id
     messages = state.messages or []
-    
-    print(f"Query: {user_query}")
-    print(f"User ID: {user_id}")
+    awaiting_clarification = state.awaiting_clarification
+    previous_ambiguity = state.previous_ambiguity
+
+    log_info(semantic_logger, f"Query: {user_query}")
+    log_debug(semantic_logger, f"User ID: {user_id}")
+    log_debug(semantic_logger, f"Clarification Mode: {awaiting_clarification}")
     
     # Step 1: Load user memories from PostgresStore
     try:
@@ -133,21 +138,16 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
             query=None,
             limit=10
         )
-        print(f"📚 Loaded {len(user_memories)} user memories")
-        for mem in user_memories[:3]:
-            mem_dict = mem.value
-            mem_type = mem_dict.get("type", "unknown")
-            mem_content = mem_dict.get("content", "")
-            print(f"   - [{mem_type}] {mem_content[:50]}...")
+        log_debug(semantic_logger, f"Loaded {len(user_memories)} user memories")
     except Exception as e:
-        print(f"⚠️ Could not load memories: {e}")
+        log_debug(semantic_logger, f"Could not load memories: {e}")
         user_memories = []
-    
+
     # Get chat history
     chat_history = messages
     if chat_history:
-        print(f"📜 Chat History: {len(messages)} messages available")
-    
+        log_debug(semantic_logger, f"Chat History: {len(messages)} messages available")
+
     # Format user memories for prompt
     memories_text = ""
     if user_memories:
@@ -159,60 +159,75 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
             memories_text += f"- [{mem_type}] {mem_content}\n"
     else:
         memories_text = "No prior user memories stored."
-    
+
     # ========================================================================
-    # STEP 1: INTENT CLASSIFICATION (Agentic, with chat history access)
+    # CLARIFICATION RESPONSE MODE: Skip intent classification
     # ========================================================================
 
-    print("\n" + "-" * 70)
-    print("STEP 1: Intent Classification")
-    print("-" * 70)
+    if awaiting_clarification and previous_ambiguity:
+        log_subsection(semantic_logger, "🔄 CLARIFICATION RESPONSE DETECTED")
+        log_info(semantic_logger, f"Response: '{user_query}'")
+        log_info(semantic_logger, f"Previous ambiguity: {previous_ambiguity.entity}")
+        log_info(semantic_logger, "→ Skipping intent classification, going to semantic enrichment")
 
-    llm = create_llm()
+        # Skip to Step 2C (semantic enrichment) with clarification context
+        # Set a flag to indicate we're in clarification mode
+        intent = IntentClassification(
+            intent_type="semantic",
+            reasoning="User responding to clarification question - routing directly to semantic enrichment",
+            confidence=1.0
+        )
+    else:
+        # ========================================================================
+        # STEP 1: INTENT CLASSIFICATION (Agentic, with chat history access)
+        # ========================================================================
 
-    # Create prompt with MessagesPlaceholder for automatic chat history injection
-    intent_prompt_template = ChatPromptTemplate.from_messages([
-        ("system", """You are an intent classifier for an enterprise RAG system.
+        log_subsection(semantic_logger, "STEP 1: Intent Classification")
 
-    Classify the user's query into ONE of these categories:
+        llm = create_llm()
 
-    1. **chitchat**: Greetings, thanks, farewells, casual conversation
-    - Examples: "hi", "hello", "thanks", "thank you", "bye", "goodbye", "how are you"
-    - Action: Respond with friendly message, don't search documents
-    
-    2. **direct**: Simple general knowledge questions that don't require company documents
-    - Examples: "what is GDP", "define market share", "explain EBITDA", "what is ROI"
-    - Characteristics: Definitional, general concepts, no possessive pronouns (our/my)
-    - Action: Enrich query with context, pass to RAG without semantic tool
-    
-    3. **semantic**: Domain-specific questions requiring company document search
-    - Examples: "what is OUR market share", "show Q3 sales", "compare regions", "all products"
-    - Characteristics: References company data, uses possessive pronouns, mentions entities
-    - Action: Use semantic search tool to find entities and detect ambiguity
+        # Create prompt with MessagesPlaceholder for automatic chat history injection
+        intent_prompt_template = ChatPromptTemplate.from_messages([
+            ("system", """You are an intent classifier for an enterprise RAG system.
 
-    IMPORTANT:
-    - Check chat history BELOW to understand context
-    - Use conversation flow to inform classification
-    - A follow-up question may reference previous context
+        Classify the user's query into ONE of these categories:
 
-    Analyze the query and return your classification with reasoning."""),
-        MessagesPlaceholder("messages"),  # Chat history auto-injected here
-        ("human", "Query: {user_query}\n\nClassify this query's intent.")
-    ])
+        1. **chitchat**: Greetings, thanks, farewells, casual conversation
+        - Examples: "hi", "hello", "thanks", "thank you", "bye", "goodbye", "how are you"
+        - Action: Respond with friendly message, don't search documents
 
-    # Format messages with chat history
-    intent_messages = intent_prompt_template.format_messages(
-        messages=chat_history,
-        user_query=user_query
-    )
+        2. **direct**: Simple general knowledge questions that don't require company documents
+        - Examples: "what is GDP", "define market share", "explain EBITDA", "what is ROI"
+        - Characteristics: Definitional, general concepts, no possessive pronouns (our/my)
+        - Action: Enrich query with context, pass to RAG without semantic tool
 
-    # Invoke with structured output
-    llm_structured = llm.with_structured_output(IntentClassification, method="function_calling")
-    intent: IntentClassification = llm_structured.invoke(intent_messages)
+        3. **semantic**: Domain-specific questions requiring company document search
+        - Examples: "what is OUR market share", "show Q3 sales", "compare regions", "all products"
+        - Characteristics: References company data, uses possessive pronouns, mentions entities
+        - Action: Use semantic search tool to find entities and detect ambiguity
 
-    print(f"✅ Intent: {intent.intent_type}")
-    print(f"   Confidence: {intent.confidence:.2f}")
-    print(f"   Reasoning: {intent.reasoning}")
+        IMPORTANT:
+        - Check chat history BELOW to understand context
+        - Use conversation flow to inform classification
+        - A follow-up question may reference previous context
+
+        Analyze the query and return your classification with reasoning."""),
+            MessagesPlaceholder("messages"),  # Chat history auto-injected here
+            ("human", "Query: {user_query}\n\nClassify this query's intent.")
+        ])
+
+        # Format messages with chat history
+        intent_messages = intent_prompt_template.format_messages(
+            messages=chat_history,
+            user_query=user_query
+        )
+
+        # Invoke with structured output
+        llm_structured = llm.with_structured_output(IntentClassification, method="function_calling")
+        intent: IntentClassification = llm_structured.invoke(intent_messages)
+
+        log_info(semantic_logger, f"Intent: {intent.intent_type} (confidence: {intent.confidence:.2f})", "✅")
+        log_debug(semantic_logger, f"Reasoning: {intent.reasoning}")
     
     # Track new messages for state
     all_new_messages = []
@@ -222,9 +237,7 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
     # ========================================================================
 
     if intent.intent_type == "chitchat":
-        print("\n" + "-" * 70)
-        print("STEP 2A: Chitchat Response Generation")
-        print("-" * 70)
+        log_subsection(semantic_logger, "STEP 2A: Chitchat Response")
         
         # Agentic chitchat with chat history
         chitchat_prompt_template = ChatPromptTemplate.from_messages([
@@ -249,8 +262,8 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         
         chitchat_response = llm.invoke(chitchat_messages)
         friendly_message = safe_utf8(chitchat_response.content)
-        
-        print(f"💬 Chitchat Response: {friendly_message}")
+
+        log_info(semantic_logger, f"Response: {friendly_message}", "💬")
         
         # Store the chitchat exchange
         chitchat_ai_message = AIMessage(
@@ -265,6 +278,8 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
             "user_memories": sanitize_any(user_memories),
             "clarification_message": friendly_message,  # For backwards compat
             "semantic_chitchat": True,  # Flag to END immediately
+            "awaiting_clarification": False,  # Clear clarification flag
+            "previous_ambiguity": None,  # Clear previous ambiguity
             "enriched_query": safe_utf8(user_query),
             "domain_context": None,
             "ambiguity_detected": sanitize_any(
@@ -277,9 +292,7 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
     # ========================================================================
 
     elif intent.intent_type == "direct":
-        print("\n" + "-" * 70)
-        print("STEP 2B: Direct Question - Light Enrichment (No Tool)")
-        print("-" * 70)
+        log_subsection(semantic_logger, "STEP 2B: Direct Question")
         
         # Agentic enrichment with chat history
         enrichment_prompt = ChatPromptTemplate.from_messages([
@@ -315,9 +328,9 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         
         llm_structured = llm.with_structured_output(SemanticOutput, method="function_calling")
         output: SemanticOutput = llm_structured.invoke(enrichment_messages)
-        
-        print(f"✅ Enriched Query: {output.enriched_query}")
-        print(f"   Reasoning: {output.reasoning}")
+
+        log_info(semantic_logger, f"Enriched: {output.enriched_query}", "✅")
+        log_debug(semantic_logger, f"Reasoning: {output.reasoning}")
         
         # Store reasoning
         if output.reasoning:
@@ -332,6 +345,8 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
             "user_memories": sanitize_any(user_memories),
             "clarification_message": None,  # No clarification for direct questions
             "semantic_chitchat": False,  # Clear the flag - this is not chitchat
+            "awaiting_clarification": False,  # Clear clarification flag
+            "previous_ambiguity": None,  # Clear previous ambiguity
             "enriched_query": safe_utf8(output.enriched_query),
             "domain_context": None,
             "ambiguity_detected": sanitize_any(
@@ -342,20 +357,47 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
     # ========================================================================
     # STEP 2C: SEMANTIC - Full tool-calling loop with ambiguity detection
     # ========================================================================
-    
+
     else:  # intent.intent_type == "semantic"
-        print("\n" + "-" * 70)
-        print("STEP 2C: Semantic Enrichment - Full Tool Loop")
-        print("-" * 70)
-        
+        log_subsection(semantic_logger, "STEP 2C: Semantic Enrichment")
+
         # Bind tools for semantic search
         tools = [azure_ai_search]
         tools_map = {"azure_ai_search": azure_ai_search}
+        llm = create_llm()
         llm_with_tools = llm.bind_tools(tools)
-        
+
+        # Build clarification context string
+        clarification_context = ""
+        if awaiting_clarification and previous_ambiguity:
+            clarification_context = f"""
+---
+CLARIFICATION CONTEXT (CRITICAL)
+---
+The user was previously asked to clarify an ambiguity:
+- Entity: {previous_ambiguity.entity}
+- Options provided: {[opt.label for opt in previous_ambiguity.options]}
+
+The user's current response is their clarification: "{user_query}"
+
+YOUR TASK:
+1. Parse the user's response (could be a number like "1", option name like "Lux", or "ALL")
+2. Map it to the correct option from the previous clarification
+3. Enrich the ORIGINAL query (from chat history) with the selected option
+4. Set ambiguous = false (ambiguity is now resolved)
+5. Do NOT ask for clarification again
+
+Example:
+- Original query: "what is market share of soap"
+- User's clarification response: "Lux"
+- Enriched query: "what is market share of Lux soap"
+---
+"""
+
         # Create prompt template with tool usage instructions
         prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a semantic enrichment agent.
+            ("system", f"""You are a semantic enrichment agent.
+{clarification_context}
 
 Use the azure_ai_search tool to search the SEMANTIC index for entity values and business context.
 You autonomously decide:
@@ -454,51 +496,48 @@ IMPORTANT:
         response = None
         
         for iteration in range(max_iterations):
-            print(f"\n--- Iteration {iteration + 1} ---")
-            
+            log_debug(semantic_logger, f"Iteration {iteration + 1}")
+
             response = llm_with_tools.invoke(agent_messages)
-            
+
             # Sanitize AI message content
             if response.content:
                 response.content = safe_utf8(response.content)
-            
+
             # Check if there are tool calls
             if response.tool_calls:
-                print(f"🔧 Tool calls: {len(response.tool_calls)}")
-                
+                log_debug(semantic_logger, f"Tool calls: {len(response.tool_calls)}")
+
                 # Add AI message with tool calls
                 agent_messages.append(response)
                 all_new_messages.append(response)
-                
+
                 # Execute tools
                 tool_messages = execute_tool_calls(response.tool_calls, tools_map)
-                
+
                 # Sanitize all tool messages
                 for tm in tool_messages:
                     if tm.content:
                         tm.content = safe_utf8(tm.content)
-                
+
                 agent_messages.extend(tool_messages)
                 all_new_messages.extend(tool_messages)
             else:
                 # No more tool calls, we have the final response
                 all_new_messages.append(response)
-                print("✅ Final response received")
+                log_debug(semantic_logger, "Final response received")
                 break
         
         raw_output = response.content if response else ""
-        
-        print("\n📄 SEMANTIC AGENT RAW OUTPUT:")
-        print("=" * 70)
-        print(raw_output[:500] + "..." if len(raw_output) > 500 else raw_output)
-        print("=" * 70)
-        
+
+        log_debug(semantic_logger, f"Raw output: {raw_output[:200]}...")
+
         # Parse with structured output
         llm_structured = create_llm().with_structured_output(
             SemanticOutput, method="function_calling"
         )
         output: SemanticOutput = llm_structured.invoke(raw_output)
-        
+
         # Store reasoning
         if output.reasoning:
             reasoning_message = AIMessage(
@@ -506,19 +545,16 @@ IMPORTANT:
                 metadata={"type": "internal_reasoning", "node": "semantic"}
             )
             all_new_messages.append(reasoning_message)
-            
-            print("\n📌 Internal Reasoning Message to store:")
-            print(reasoning_message.content[:500] + "..." if len(reasoning_message.content) > 500 else reasoning_message.content)
-        
-        print(f"\n✅ STRUCTURED OUTPUT:")
-        print(f"   Enriched: {output.enriched_query}")
-        print(f"   Ambiguous: {output.ambiguity_detected.ambiguous}")
-        
+            log_debug(semantic_logger, f"Reasoning: {reasoning_message.content[:200]}...")
+
+        log_info(semantic_logger, f"Enriched: {output.enriched_query}", "✅")
+        log_info(semantic_logger, f"Ambiguous: {output.ambiguity_detected.ambiguous}")
+
         if output.ambiguity_detected.ambiguous:
-            print(f"   Entity: {output.ambiguity_detected.entity}")
-            print(f"   Options: {len(output.ambiguity_detected.options)}")
-            for opt in output.ambiguity_detected.options[:5]:
-                print(f"      - {opt.label}")
+            log_info(semantic_logger, f"Entity: {output.ambiguity_detected.entity}")
+            log_info(semantic_logger, f"Options: {len(output.ambiguity_detected.options)}")
+            for opt in output.ambiguity_detected.options[:3]:
+                log_debug(semantic_logger, f"  - {opt.label}")
         
         # Return state updates
         return {
@@ -526,6 +562,8 @@ IMPORTANT:
             "user_memories": sanitize_any(user_memories),
             "clarification_message": None,  # Clarification will be set by clarification_node if needed
             "semantic_chitchat": False,  # Clear the flag - this is not chitchat
+            "awaiting_clarification": False,  # Clear clarification flag after processing
+            "previous_ambiguity": None,  # Clear previous ambiguity
             "enriched_query": safe_utf8(output.enriched_query),
             "domain_context": sanitize_any(output.domain_context),
             "ambiguity_detected": sanitize_any(
