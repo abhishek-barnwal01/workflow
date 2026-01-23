@@ -94,8 +94,14 @@ Transform the RAW answer above into a POLISHED, PROFESSIONAL response using thes
 3. **DATA PRESENTATION**
    - Format percentages clearly: **+16.6% YoY** or **41.6% penetration**
    - Format comparisons: **Brand A** vs **Brand B**
-   - Use tables (markdown format) when comparing multiple data points
+   - Use markdown tables when comparing multiple data points:
+     ```
+     | Metric | Value | Change |
+     |--------|-------|--------|
+     | Sales  | $10M  | +15%   |
+     ```
    - Highlight trends: 📈 for growth, 📉 for decline (optional, only if appropriate)
+   - For visual data relationships, use Mermaid diagrams when appropriate
 
 4. **CITATIONS & SOURCES**
    - At the end, add a "### Sources" section
@@ -125,6 +131,23 @@ Transform the RAW answer above into a POLISHED, PROFESSIONAL response using thes
    - Don't add information that wasn't in the RAW answer
    - Don't remove important details
 
+9. **ADVANCED FORMATTING** (Use when appropriate)
+   - **Code Blocks**: Use triple backticks with language for code examples
+     ```python
+     def calculate_growth(old, new):
+         return ((new - old) / old) * 100
+     ```
+   - **Mermaid Diagrams**: For visualizing relationships, flows, or hierarchies
+     ```mermaid
+     graph TD
+         A[Market Share] --> B[GN1: 16.6%]
+         A --> C[Lux: 41.6%]
+     ```
+   - **Math Equations**: Use LaTeX syntax for formulas when needed
+     $$\\text{Growth Rate} = \\frac{\\text{New} - \\text{Old}}{\\text{Old}} \\times 100$$
+   - **Blockquotes**: Use `>` for important notes or disclaimers
+   - **Horizontal Rules**: Use `---` to separate major sections
+
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 EXAMPLE OUTPUT FORMAT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -143,10 +166,29 @@ The Kantar household panel data shows complementary insights:
 - **Penetration:** 41.6% (with **+15% YoY growth**)
 - **Average Consumption:** 1.62 gms/HH/month (**+11% YoY growth**)
 
+### Comparative Analysis
+
+| Brand | Sales Growth | Penetration | Volume Intensity |
+|-------|-------------|-------------|------------------|
+| **GN1** | +16.6% YoY | 41.6% | High |
+| **Lux** | - | Higher | Lower |
+
+**Visualization of market dynamics:**
+
+```mermaid
+graph LR
+    A[Soap Market] --> B[GN1: Strong Growth]
+    A --> C[Lux: High Penetration]
+    B --> D[+16.6% Sales Value]
+    C --> E[41.6% Market Share]
+```
+
 ### Sources
 
 - *Soaps Annual Presentation 2022 - Nielsen IQ RMS*
 - *Toilet Soap Annual Presentation 2022 - Kantar (Feb 22, 2023)*
+
+> ℹ️ **Note:** Data represents MAT Dec'22 period. For the most current figures, please refer to the latest quarterly reports.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 NOW FORMAT THE RAW ANSWER
@@ -161,11 +203,16 @@ Output your formatted response as JSON:
 }}
 
 REMEMBER:
-- Use markdown formatting extensively
+- Use markdown formatting extensively (tables, code blocks, mermaid diagrams)
 - Make it look like a professional chat application response
 - Add confidence disclaimer if needed
 - Keep all facts accurate
 - Make it scannable and easy to read
+- Use advanced formatting (tables, mermaid, code blocks) when it ENHANCES understanding
+- Don't force advanced formatting if simple bullets/text work better
+- Mermaid diagrams are great for: comparisons, hierarchies, flows, relationships
+- Tables are great for: comparing metrics across entities, showing data series
+- Code blocks are for: formulas, calculations, examples
 """
 
     # ----------------- Invoke LLM -----------------
