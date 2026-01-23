@@ -460,7 +460,7 @@ Example:
 
         # Create prompt template with tool usage instructions
         prompt = ChatPromptTemplate.from_messages([
-            ("system", f"""You are a semantic enrichment agent.
+            ("system", """You are a semantic enrichment agent.
 {clarification_context}
 
 Use the azure_ai_search tool to search the SEMANTIC index for entity values and business context.
@@ -549,6 +549,7 @@ IMPORTANT:
         
         # Format initial messages with history
         initial_messages = prompt.format_messages(
+            clarification_context=clarification_context,
             memories_text=memories_text,
             messages=chat_history,
             user_query=user_query,
