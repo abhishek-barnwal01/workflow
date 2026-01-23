@@ -66,7 +66,7 @@ def azure_ai_search(query: str, index_type: str, top_k: int) -> str:
         search_kwargs = {
             "search_text": query,
             "top": min(top_k, 50),
-            "select": ["content_text", "document_title", "content_path", "content_id"]
+            "select": ["content_text", "document_title", "content_path", "content_id", "page_number"]
         }
         
         # Add vector search if embedding succeeded
@@ -90,15 +90,18 @@ def azure_ai_search(query: str, index_type: str, top_k: int) -> str:
             content = result.get("content_text", "")
             title = result.get("document_title", "")
             source = result.get("content_path", result.get("document_title", "unknown"))
-            
+            page_number = result.get("page_number", None)
+
             # Combine title and content
             full_content = f"{title}\n\n{content}" if title else content
-            
+
             doc = {
                 "id": result.get("content_id"),
                 "content": full_content[:1000],
                 "score": result.get("@search.score", 0.0),
-                "source": source
+                "source": source,
+                "page_number": page_number,
+                "document_title": title
             }
             docs.append(doc)
             scores.append(doc["score"])

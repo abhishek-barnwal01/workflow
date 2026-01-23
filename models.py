@@ -48,9 +48,11 @@ class SemanticOutput(BaseModel):
 class RetrievedDoc(BaseModel):
     model_config = {"extra": "forbid"}
 
-    content: str
-    score: float
-    source: str
+    filename: str = Field(description="Clean filename without UUID prefix")
+    content_path: str = Field(description="Full path/URL to the document")
+    score: float = Field(description="Relevance score from search")
+    pages: Optional[str] = Field(default=None, description="Page numbers where information was found (e.g., 'p.12', 'pp.5-7')")
+    description: str = Field(description="Brief description of what this document contains relevant to the query")
 
 
 class RAGOutput(BaseModel):
