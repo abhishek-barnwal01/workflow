@@ -235,7 +235,24 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
 
         # Invoke with structured output
         llm_structured = llm.with_structured_output(IntentClassification, method="function_calling")
-        intent: IntentClassification = llm_structured.invoke(intent_messages)
+
+        try:
+            intent: IntentClassification = llm_structured.invoke(intent_messages)
+        except Exception as e:
+            # Handle content filter or other API errors
+            error_msg = str(e)
+            print(f"⚠️ Intent Classification Error: {error_msg[:200]}")
+            if "content_filter" in error_msg.lower() or "jailbreak" in error_msg.lower():
+                print("   Content filter triggered - defaulting to 'direct' intent")
+                # Fallback: treat as direct question
+                intent = IntentClassification(
+                    intent_type="direct",
+                    reasoning="Content filter triggered during intent classification, defaulting to direct",
+                    confidence=0.5
+                )
+            else:
+                # Re-raise other errors
+                raise
 
         print(f"✅ Intent: {intent.intent_type}")
         print(f"   Confidence: {intent.confidence:.2f}")
@@ -273,9 +290,18 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
             messages=chat_history,
             user_query=user_query
         )
-        
-        chitchat_response = llm.invoke(chitchat_messages)
-        friendly_message = safe_utf8(chitchat_response.content)
+
+        try:
+            chitchat_response = llm.invoke(chitchat_messages)
+            friendly_message = safe_utf8(chitchat_response.content)
+        except Exception as e:
+            error_msg = str(e)
+            print(f"⚠️ Chitchat Error: {error_msg[:200]}")
+            if "content_filter" in error_msg.lower() or "jailbreak" in error_msg.lower():
+                print("   Content filter triggered - using fallback greeting")
+                friendly_message = "Hello! I'm here to help you find information in your documents. What would you like to know?"
+            else:
+                raise
 
         print(f"💬 Chitchat Response: {friendly_message}")
         
@@ -341,9 +367,27 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
             messages=chat_history,
             user_query=user_query
         )
-        
+
         llm_structured = llm.with_structured_output(SemanticOutput, method="function_calling")
-        output: SemanticOutput = llm_structured.invoke(enrichment_messages)
+
+        try:
+            output: SemanticOutput = llm_structured.invoke(enrichment_messages)
+        except Exception as e:
+            # Handle content filter or other API errors
+            error_msg = str(e)
+            print(f"⚠️ LLM Error: {error_msg[:200]}")
+            if "content_filter" in error_msg.lower() or "jailbreak" in error_msg.lower():
+                print("   Content filter triggered - using fallback enrichment")
+                # Fallback: just use the original query
+                output = SemanticOutput(
+                    enriched_query=user_query,
+                    domain_context=None,
+                    ambiguity_detected=AmbiguityInfo(ambiguous=False),
+                    reasoning="Content filter triggered, using original query without enrichment"
+                )
+            else:
+                # Re-raise other errors
+                raise
 
         print(f"✅ Enriched Query: {output.enriched_query}")
         print(f"   Reasoning: {output.reasoning}")
@@ -388,13 +432,15 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         # Build clarification context string
         clarification_context = ""
         if awaiting_clarification and previous_ambiguity:
+            # Join options as comma-separated string (avoid {} in template)
+            options_str = ", ".join([opt.label for opt in previous_ambiguity.options])
             clarification_context = f"""
 ---
 CLARIFICATION CONTEXT (CRITICAL)
 ---
 The user was previously asked to clarify an ambiguity:
 - Entity: {previous_ambiguity.entity}
-- Options provided: {[opt.label for opt in previous_ambiguity.options]}
+- Options provided: {options_str}
 
 The user's current response is their clarification: "{user_query}"
 
