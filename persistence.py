@@ -16,13 +16,13 @@ connection_kwargs = {
 }
 
 pool = ConnectionPool(
-    conninfo=f"postgres://{os.getenv('POSTGRES_USER','postgres')}:{os.getenv('POSTGRES_PASSWORD','admin')}@{os.getenv('POSTGRES_HOST','localhost')}:{os.getenv('POSTGRES_PORT',5432)}/{os.getenv('POSTGRES_DB','qt328pp')}",
+    conninfo=f"postgres://{os.getenv('POSTGRES_USER','postgres')}:{os.getenv('POSTGRES_PASSWORD','postgres')}@{os.getenv('POSTGRES_HOST','localhost')}:{os.getenv('POSTGRES_PORT',5432)}/{os.getenv('POSTGRES_DB','qt328pp')}",
     max_size=20,
     kwargs=connection_kwargs
 )
 
 checkpointer = PostgresSaver(pool)
-# checkpointer.setup()
+checkpointer.setup()
 
 
 # # persistence.py

@@ -8,7 +8,7 @@ load_dotenv()
 
 pool = ConnectionPool(
     conninfo=f"postgres://{os.getenv('POSTGRES_USER','postgres')}:"
-             f"{os.getenv('POSTGRES_PASSWORD','admin')}@"
+             f"{os.getenv('POSTGRES_PASSWORD','postgres')}@"
              f"{os.getenv('POSTGRES_HOST','localhost')}:"
              f"{os.getenv('POSTGRES_PORT',5432)}/"
              f"{os.getenv('POSTGRES_DB','qt328pp')}",
