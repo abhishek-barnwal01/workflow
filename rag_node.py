@@ -173,31 +173,15 @@ STEP 7: Synthesize Professional Answer
 - Detailed Analysis (2-4 paragraphs) with inline citations
 - Key Takeaways (3-5 bullets)
 
-DOCUMENT REFERENCE FORMATTING & PAGE NUMBERS
-CRITICAL: Extract and include page numbers for EVERY source document
-
-From tool results, you'll see:
-- "document_title": the filename
-- "content_path": the full path/URL
-- "page_number": the page number (CRITICAL - include this!)
-
-YOU MUST:
-✓ Extract the page_number from EVERY tool result
-✓ Format pages as "p.12" (single page) or "pp.5-7" (range)
-✓ If multiple pages from same doc, combine as "pp.5,8,12"
-✓ Clean filename by removing UUID prefixes (e.g., "abc123_report.pdf" → "report.pdf")
-✓ Store in retrieved_docs with ALL fields populated
+DOCUMENT REFERENCE FORMATTING
+- Always use 📄 [filename](content_path)
+- Extract cleaned filename by removing UUID prefix
+- Format as markdown links
 
 Output JSON schema:
 {{
   "retrieved_docs": [
-    {{
-      "filename": "clean filename without UUID",
-      "content_path": "full path from tool",
-      "score": float,
-      "pages": "p.12 or pp.5-7 or pp.5,8,12",
-      "description": "what info from this doc was used"
-    }}
+    {{ "filename": "string", "content_path": "string", "score": float, "pages": "string", "description": "string" }}
   ],
   "final_answer": "string",
   "search_strategy": "string",

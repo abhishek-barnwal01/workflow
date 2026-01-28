@@ -49,20 +49,9 @@ def formatter_node(state: PipelineState) -> Dict[str, Any]:
     user_query = state.user_query
     rag_final_answer = state.rag_output.final_answer if state.rag_output else ""
     confidence = state.evaluation.confidence_score if state.evaluation else 0.8
-    retrieved_docs = state.rag_output.retrieved_docs if state.rag_output else []
 
     print(f"\n📝 RAG's answer to format ({len(rag_final_answer)} chars)")
     print(f"🔹 Confidence: {confidence:.2f}")
-    print(f"🔹 Retrieved docs: {len(retrieved_docs)}")
-
-    # Format retrieved docs for the prompt
-    if retrieved_docs:
-        sources_text = "\n".join([
-            f"- {doc.filename} (Path: {doc.content_path}, Pages: {doc.pages or 'N/A'}, Score: {doc.score:.2f})"
-            for doc in retrieved_docs
-        ])
-    else:
-        sources_text = "No sources available"
 
     # ----------------- Production-grade formatting prompt -----------------
     prompt = f"""
@@ -79,11 +68,6 @@ USER'S QUESTION
 RAG'S RAW ANSWER (Unformatted)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 {rag_final_answer}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-SOURCE DOCUMENTS (Retrieved by RAG)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-{sources_text}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 CONFIDENCE SCORE: {confidence:.2f} / 1.00
@@ -119,17 +103,11 @@ Transform the RAW answer above into a POLISHED, PROFESSIONAL response using thes
    - Highlight trends: 📈 for growth, 📉 for decline (optional, only if appropriate)
    - For visual data relationships, use Mermaid diagrams when appropriate
 
-4. **CITATIONS & SOURCES** (CRITICAL - Must follow exact format)
-   - At the END of your response, add a "### Sources" section
-   - IMPORTANT: Format EVERY source using this EXACT pattern:
-     `- 📄 [filename](content_path) - Page(s): p.X or pp.X-Y`
-   - The source documents are provided above - use the EXACT filename, content_path, and pages
-   - Examples:
-     * Single page: `- 📄 [Soaps Annual Presentation 2022.pdf](https://path/to/file.pdf) - Page: p.12`
-     * Multiple pages: `- 📄 [Market Analysis Q3.pdf](https://path/to/file.pdf) - Pages: pp.5-8`
-     * Multiple non-consecutive pages: `- 📄 [Report.pdf](https://path/to/file.pdf) - Pages: pp.3,7,12`
-   - If page number is not available, omit the "Page(s):" part
-   - Make the filename clickable using markdown link syntax: [filename](path)
+4. **CITATIONS & SOURCES**
+   - At the end, add a "### Sources" section
+   - List all referenced documents/reports as bullet points
+   - Format: `- *Source Name* (Date or Context)`
+   - Example: `- *Soaps Annual Presentation 2022 - Nielsen IQ RMS*`
 
 5. **CLARITY & READABILITY**
    - Use short paragraphs (2-4 sentences max)
@@ -166,7 +144,7 @@ Transform the RAW answer above into a POLISHED, PROFESSIONAL response using thes
          A --> C[Lux: 41.6%]
      ```
    - **Math Equations**: Use LaTeX syntax for formulas when needed
-     $$\\text{{Growth Rate}} = \\frac{{\\text{{New}} - \\text{{Old}}}}{{\\text{{Old}}}} \\times 100$$
+     $$\\text{Growth Rate} = \\frac{\\text{New} - \\text{Old}}{\\text{Old}} \\times 100$$
    - **Blockquotes**: Use `>` for important notes or disclaimers
    - **Horizontal Rules**: Use `---` to separate major sections
 
@@ -207,8 +185,8 @@ graph LR
 
 ### Sources
 
-- 📄 [Soaps Annual Presentation 2022_Nielsen.pdf](https://gcplcmiadls001.blob.core.windows.net/gcpl-soap/gcpl-allsoaps/Soaps%20Annual%20Presentation%202022_Nielsen.pdf) - Pages: pp.12,15
-- 📄 [Toilet Soap Annual Presentation-2022 - Kantar 22.02.2023.pptx](https://gcplcmiadls001.blob.core.windows.net/gcpl-soap/gcpl-allsoaps/Toilet%20Soap%20Annual%20Presentation-2022%20-%20Kantar%2022.02.2023.pptx) - Page: p.8
+- *Soaps Annual Presentation 2022 - Nielsen IQ RMS*
+- *Toilet Soap Annual Presentation 2022 - Kantar (Feb 22, 2023)*
 
 > ℹ️ **Note:** Data represents MAT Dec'22 period. For the most current figures, please refer to the latest quarterly reports.
 
