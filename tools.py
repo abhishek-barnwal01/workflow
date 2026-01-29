@@ -134,7 +134,10 @@ def azure_ai_search(
 
         # Add optional parameters
         if filter:
-            search_kwargs["filter"] = filter
+            # Fix common OData escaping issues:
+            # Replace backslash-escaped quotes (\') with OData-style doubled quotes ('')
+            sanitized_filter = filter.replace("\\'", "''")
+            search_kwargs["filter"] = sanitized_filter
         if facets and isinstance(facets, list) and len(facets) > 0:
             search_kwargs["facets"] = facets
         if skip and isinstance(skip, int):
