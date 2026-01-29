@@ -247,6 +247,35 @@ def chat_completions():
             }
         }), 500
 
+import re
+
+def append_sas_to_blob_urls(markdown_text: str) -> str:
+    """
+    Finds all Azure Blob Storage URLs in markdown and appends SAS token.
+    """
+    sas_token = os.getenv('AZURE_BLOB_SAS_TOKEN', '')
+    
+    if not sas_token:
+        print("⚠️ WARNING: AZURE_BLOB_SAS_TOKEN not set")
+        return markdown_text
+    
+    # Pattern to match blob URLs
+    blob_pattern = re.compile(
+        r'(https://[a-zA-Z0-9]+\.blob\.core\.windows\.net/[^\s\)]+?)(?=[\s\)\]]|$)'
+    )
+    
+    def add_sas(match):
+        url = match.group(1)
+        
+        # Skip if SAS already present
+        if 'sv=' in url or 'sig=' in url:
+            return url
+        
+        # Append SAS token
+        separator = '&' if '?' in url else '?'
+        return f"{url}{separator}{sas_token}"
+    
+    return blob_pattern.sub(add_sas, markdown_text)
 
 # ---------- Streaming generator for LibreChat ----------
 def generate_stream(user_query, langchain_messages, user_id, session_id, model):
@@ -280,6 +309,7 @@ def generate_stream(user_query, langchain_messages, user_id, session_id, model):
         else:
             print(f"📄 No clarification, using formatted response")
             final_response = result.get("formatted", {}).get("formatted_response", "")
+            final_response = append_sas_to_blob_urls(final_response)
             if not final_response:
                 print(f"⚠️ No formatted response, result keys: {result.keys()}")
 

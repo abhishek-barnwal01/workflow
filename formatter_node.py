@@ -106,8 +106,10 @@ Transform the RAW answer above into a POLISHED, PROFESSIONAL response with these
 4. CITATIONS & SOURCES
    - At the end, add a "### Sources" section
    - List all referenced documents/reports as bullet points
-   - Format: - *Source Name* (Date or Context)
+   - Format: - Always use 📄 [filename](content_path)
    - Example: - *Soaps Annual Presentation 2022 - Nielsen IQ RMS*
+   - Extract cleaned filename by removing UUID prefix
+   - Format as markdown links
 
 5. CLARITY & READABILITY
    - Use short paragraphs (2-4 sentences max)
@@ -138,15 +140,82 @@ Transform the RAW answer above into a POLISHED, PROFESSIONAL response with these
          return ((new - old) / old) * 100
      ```
    - Mermaid Diagrams: For visualizing relationships, flows, or hierarchies
-     ```mermaid
+     CRITICAL SYNTAX RULES:
+     • Labels with spaces or special characters MUST use quotes: ["Label with spaces"]
+     • Avoid special chars like %, +, &, $ in labels (use words instead: "16.6% growth" → ["16.6 percent growth"])
+     • Use --> for arrows (not => or ->)
+     • Graph types: graph TD (top-down), graph LR (left-right)
+     
+     CORRECT FORMAT:
+     :::artifact{{type="application/vnd.mermaid" title="Market Analysis"}}
      graph TD
-         A[Market Share] --> B[GN1: 16.6%]
-         A --> C[Lux: 41.6%]
-     ```
+         A["Market Overview"] --> B["Brand A"]
+         A --> C["Brand B"]
+         B --> D["Growth: 16.6 percent YoY"]
+         C --> E["Penetration: 41.6 percent"]
+     :::
+    
+    - BAR CHARTS (comparing metrics across categories):
+     :::artifact{{type="application/vnd.mermaid" title="Sales Comparison"}}
+     %%{{init: {{'theme':'base'}}}}%%
+     xychart-beta
+         title "Brand Sales Growth (YoY)"
+         x-axis ["GN1", "Lux", "Lifebuoy", "Dove", "Santoor"]
+         y-axis "Growth Percent" 0 --> 20
+         bar [16.6, 8.2, 12.4, 5.7, 10.1]
+     :::
+    
+    - LINE CHARTS (trends over time):
+     :::artifact{{type="application/vnd.mermaid" title="Market Share Trend"}}
+     %%{{init: {{'theme':'base'}}}}%%
+     xychart-beta
+         title "GN1 Market Share Trend"
+         x-axis ["Jan", "Feb", "Mar", "Apr", "May", "Jun"]
+         y-axis "Market Share Percent" 0 --> 20
+         line [12.5, 13.2, 13.8, 14.5, 15.1, 16.6]
+     :::
+     
+    - PIE CHARTS (showing proportions):
+     :::artifact{{type="application/vnd.mermaid" title="Category Share"}}
+     %%{{init: {{'theme':'base'}}}}%%
+     pie title Market Share by Brand
+         "GN1" : 16.6
+         "Lux" : 41.6
+         "Lifebuoy" : 18.5
+         "Others" : 23.3
+     :::
+     
+    - MULTIPLE DATA SERIES (comparing trends):
+     :::artifact{{type="application/vnd.mermaid" title="Brand Performance"}}
+     %%{{init: {{'theme':'base'}}}}%%
+     xychart-beta
+         title "Sales vs Penetration Trends"
+         x-axis ["Q1", "Q2", "Q3", "Q4"]
+         y-axis "Percent" 0 --> 50
+         line [10, 12, 15, 16.6]
+         line [35, 38, 40, 41.6]
+     :::
+    
    - Math Equations: Use LaTeX syntax for formulas
      $$Growth Rate = (New - Old) / Old * 100$$
    - Blockquotes: Use > for important notes or disclaimers
    - Horizontal Rules: Use --- to separate major sections
+
+CRITICAL RULES:
+• Bar/Line charts: Use "xychart-beta" keyword
+• Always include: title, x-axis, y-axis, data
+• NO special chars in labels (%, +, &, $) - spell out "percent", "dollars"
+• Y-axis range: "0 --> maxValue" (use arrows)
+• Multiple bars/lines: add multiple "bar [...]" or "line [...]" rows
+• Pie charts: Use "pie title" syntax
+• All charts work in artifacts: :::artifact{{type="application/vnd.mermaid" title="..."}}...:::
+
+WHEN TO USE EACH CHART TYPE:
+• **Flow diagrams**: Show relationships, hierarchies, processes
+• **Bar charts**: Compare values across categories (sales, growth, market share)
+• **Line charts**: Show trends over time (quarterly performance, historical data)
+• **Pie charts**: Show composition/proportions (market share distribution)
+• **Multiple series**: Compare two metrics side-by-side (sales vs penetration)
 
 ==================================================
 EXAMPLE OUTPUT FORMAT
@@ -175,13 +244,14 @@ The Kantar household panel data shows complementary insights:
 
 ### Market Dynamics Visualization
 
-```mermaid
-graph LR
-    A[Soap Market] --> B[GN1: Strong Growth]
-    A --> C[Lux: High Penetration]
-    B --> D[+16.6% Sales Value]
-    C --> E[41.6% Market Share]
-```
+:::artifact{{type="application/vnd.mermaid" title="GN1 Growth vs PY (Kantar Panel, MAT Dec'22)"}}
+graph TD
+    A["Toilet Soaps Market 2022"] --> B["Godrej No.1"]
+    B --> C["Value Growth: Up 16.6 percent YoY"]
+    B --> D["ASP and Mix Improvement"]
+    B --> E["Penetration: 41.6 percent"]
+    A --> F["Category Volume Pressure"]
+:::
 
 ### Sources
 
