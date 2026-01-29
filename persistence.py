@@ -22,7 +22,7 @@ pool = ConnectionPool(
 )
 
 checkpointer = PostgresSaver(pool)
-# checkpointer.setup()
+checkpointer.setup()
 
 
 # # persistence.py
