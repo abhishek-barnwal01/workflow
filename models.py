@@ -51,6 +51,7 @@ class RetrievedDoc(BaseModel):
     content: str
     score: float
     source: str
+    pages: Optional[str] = None
 
 
 class RAGOutput(BaseModel):
