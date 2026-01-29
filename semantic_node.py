@@ -1,5 +1,6 @@
 """Semantic Node - Query enrichment and ambiguity detection"""
 
+from datetime import datetime
 from typing import Dict, Any, List
 from langchain_openai import AzureChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
@@ -8,7 +9,10 @@ from tools import azure_ai_search
 from models import AmbiguityInfo, IntentClassification, SemanticOutput, PipelineState
 import config
 import json
-from memory_store import store  # <-- your PostgresStore
+from memory_store import store  
+from cache_utils import cache_lookup, cache_store, should_bypass_cache, create_fingerprint
+from tools import get_embedding
+from cache_service import CacheService
 
 
 
@@ -471,6 +475,65 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         print("ℹ️  User knows exactly what they want - specific entities mentioned")
         print("ℹ️  Modifying query for RAG node - RAG will handle the search")
 
+        # ✅ INITIALIZE CACHE
+        query_cache = state.query_cache if hasattr(state, 'query_cache') else {}
+        # ✅ PHASE 1: CHECK SEMANTIC CACHE
+        print("\n🔍 Checking semantic enrichment cache...")
+        if should_bypass_cache(user_query):
+            print("   🔄 Force fresh semantic enrichment")
+            cached_enrichment = None
+        else:
+            query_embedding = get_embedding(user_query)
+            # Look for cached enrichment
+            cached_enrichment = cache_lookup(
+                query=user_query,
+                query_embedding=query_embedding,
+                cache=query_cache,
+                threshold=0.80
+            )
+            # Check if cached entry has enrichment data
+            if cached_enrichment and "enriched_query" in cached_enrichment:
+                print(f"   ⚡ Using cached semantic enrichment")
+                print(f"   📝 Cached enriched query: {cached_enrichment['enriched_query'][:60]}...")
+                # Update hit count
+                fingerprint = create_fingerprint(user_query)
+                if fingerprint in query_cache:
+                    query_cache[fingerprint]["hit_count"] = cached_enrichment.get("hit_count", 0)
+                # Reconstruct output from cache
+                ambiguity_data = cached_enrichment.get("ambiguity_detected", {})
+                if isinstance(ambiguity_data, dict):
+                    ambiguity_info = AmbiguityInfo(**ambiguity_data)
+                else:
+                    ambiguity_info = AmbiguityInfo(ambiguous=False)
+                output = SemanticOutput(
+                    enriched_query=cached_enrichment["enriched_query"],
+                    domain_context=cached_enrichment.get("domain_context"),
+                    ambiguity_detected=ambiguity_info,
+                    reasoning="Retrieved from semantic enrichment cache (specific query)"
+                )
+                # Store reasoning
+                reasoning_message = AIMessage(
+                    content=safe_utf8(output.reasoning),
+                    metadata={"type": "internal_reasoning", "node": "semantic", "cached": True}
+                )
+                all_new_messages.append(reasoning_message)
+                return {
+                    "messages": sanitize_any(all_new_messages),
+                    "user_memories": sanitize_any(user_memories),
+                    "clarification_message": None,
+                    "semantic_chitchat": False,
+                    "awaiting_clarification": False,
+                    "previous_ambiguity": None,
+                    "enriched_query": safe_utf8(output.enriched_query),
+                    "domain_context": sanitize_any(output.domain_context),
+                    "ambiguity_detected": sanitize_any(output.ambiguity_detected.model_dump()),
+                    "query_cache": query_cache
+                }
+            else:
+                cached_enrichment = None
+        # ✅ PHASE 2: CACHE MISS - EXECUTE ENRICHMENT
+        print("   🔄 Cache miss - executing semantic enrichment")
+
         # Agentic enrichment with chat history but NO TOOLS
         enrichment_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a query enrichment agent for specific, targeted questions.
@@ -544,6 +607,34 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
             )
             all_new_messages.append(reasoning_message)
 
+        # ✅ PHASE 3: STORE ENRICHMENT IN CACHE
+        print("\n💾 Storing semantic enrichment in cache...")
+        query_embedding = get_embedding(user_query)
+        if query_embedding:
+            # Store enrichment (not full answer - that comes from RAG node)
+            fingerprint = create_fingerprint(user_query)
+            cache_entry = {
+                "query_text": user_query,
+                "original_query": user_query,
+                "query_embedding": query_embedding,
+                "enriched_query": output.enriched_query,
+                "domain_context": output.domain_context,
+                "ambiguity_detected": output.ambiguity_detected.model_dump(),
+                "retrieved_docs": [],  # No final docs yet
+                "final_answer": "",  # No final answer yet - comes from RAG
+                "timestamp": datetime.now().isoformat(),
+                "hit_count": 0,
+                "similarity_score": 1.0,
+                "cache_type": "semantic_specific_enrichment"
+            }
+            query_cache[fingerprint] = cache_entry
+            # LRU eviction
+            if len(query_cache) > 100:
+                least_used = min(query_cache.items(), key=lambda x: (x[1].get("hit_count", 0), x[1].get("timestamp", "")))
+                del query_cache[least_used[0]]
+                print(f"   🗑️ Evicted cache entry: {least_used[0][:8]}...")
+            print(f"   💾 Stored semantic enrichment (total: {len(query_cache)} entries)")
+
         return {
             "messages": sanitize_any(all_new_messages),
             "user_memories": sanitize_any(user_memories),
@@ -556,6 +647,7 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
             "ambiguity_detected": sanitize_any(
                 output.ambiguity_detected.model_dump()
             ),
+            "query_cache" : query_cache
         }
 
     # ========================================================================
@@ -788,6 +880,24 @@ IMPORTANT:
             print(f"   Options: {len(output.ambiguity_detected.options)}")
             for opt in output.ambiguity_detected.options[:5]:
                 print(f"      - {opt.label}")
+
+        cache_service = CacheService(
+                answer_cache=state.answer_cache if hasattr(state, 'answer_cache') else {},
+                clarification_cache=state.clarification_cache if hasattr(state, 'clarification_cache') else {},
+                thread_id=getattr(state, "thread_id", "default")
+            )
+
+        # Store clarification info in cache if ambiguous
+        if output.ambiguity_detected.ambiguous:
+            print("\n💾 Storing ambiguity info in clarification cache...")
+            cache_service.store_clarification(
+                query=user_query,
+                query_embedding=get_embedding(user_query),
+                enriched_query=output.enriched_query,
+                ambiguity_detected=output.ambiguity_detected,
+                domain_context=output.domain_context
+            )
+            print("   ✅ Clarification info cached")
         
         # Return state updates
         return {
@@ -804,4 +914,6 @@ IMPORTANT:
                 if output.ambiguity_detected
                 else None
             ),
+            "answer_cache": cache_service.answer_cache, 
+            "clarification_cache": cache_service.clarification_cache,
         }

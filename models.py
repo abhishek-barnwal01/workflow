@@ -1,5 +1,6 @@
 """Pydantic models for structured outputs"""
 
+from datetime import datetime
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional, Literal, Annotated
 from langgraph.graph import add_messages
@@ -119,3 +120,21 @@ class PipelineState(BaseModel):
         default_factory=lambda: {"semantic": [], "rag": []}
     )
     ambiguity_detected: Optional[AmbiguityInfo] = Field(default_factory=lambda: AmbiguityInfo(ambiguous=False))
+
+    thread_id: str = Field(default="default")
+
+    #query_cache: Dict[str, Dict[str, Any]] = Field(default_factory=dict)  
+    answer_cache: Dict[str, Any] = Field(default_factory=dict)
+    clarification_cache: Dict[str, Any] = Field(default_factory=dict)
+
+    clarification_chosen: Optional[str] = None
+    clarification_entity: Optional[str] = None
+
+    showing_cached_variants: bool = False
+    cached_clarification_options: List[Dict[str, Any]] = Field(default_factory=list)
+
+    cache_hit: bool = False
+    needs_clarification_from_cache: bool = False
+
+
+

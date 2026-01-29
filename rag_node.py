@@ -6,11 +6,13 @@ from langchain_openai import AzureChatOpenAI
 from langchain_core.messages import ToolMessage
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from tools import azure_ai_search
+from tools import azure_ai_search, get_embedding
 from models import RAGOutput, PipelineState
 import config
 import json
 from memory_store import store
+from cache_utils import should_bypass_cache
+from cache_service import CacheService
 
 
 # ----- Add this helper at the top of rag_node.py -----
@@ -106,21 +108,63 @@ def rag_node(state: PipelineState) -> Dict[str, Any]:
     enriched_query = state.enriched_query or ""
     messages = state.messages
 
+    cache_service = CacheService(
+        answer_cache=getattr(state, 'answer_cache', {}),
+        clarification_cache=getattr(state, 'clarification_cache', {}),
+        thread_id=getattr(state, 'thread_id', 'default')
+    )
+    # Check cache
+    print("\n🔍 Checking answer cache...")
+    if should_bypass_cache(enriched_query):
+        print("   🔄 Force fresh retrieval")
+        cache_result = None
+    else:
+        query_embedding = get_embedding(enriched_query)
+        if query_embedding:
+            cache_result = cache_service.lookup(enriched_query, query_embedding)
+        else:
+            cache_result = None
+    # Return cached result if hit
+    if cache_result and cache_result.cache_hit:
+        print(f"   ⚡ Using cached result from {cache_result.source}")
+        from models import RetrievedDoc
+        # Handle both string and dict answers
+        if isinstance(cache_result.answer, str):
+            final_answer = cache_result.answer
+            retrieved_docs = []
+        else:
+            final_answer = cache_result.answer.get("final_answer", "")
+            retrieved_docs = [
+                RetrievedDoc(**doc) for doc in cache_result.answer.get("retrieved_docs", [])
+            ]
+        rag_output = RAGOutput(
+            retrieved_docs=retrieved_docs,
+            final_answer=final_answer,
+            search_strategy=f"Cache hit in RAG node ({cache_result.source})",
+            reasoning="Retrieved from answer cache",
+            total_searches=0
+        )
+        return {
+            "messages": [],
+            "rag_output": rag_output.dict(),
+            "answer_cache": cache_service.answer_cache,
+            "clarification_cache": cache_service.clarification_cache
+        }
+    # Cache miss - proceed with RAG
+    print("   🔄 Cache miss - executing full RAG retrieval")
+    # Get user memories
     user_memories = store.search(
-    ("rag_memory", state.user_id),
-    query=None,   # no semantic filtering, just fetch all
-    limit=20      # adjust as needed
-)
-
-# 🔹 Step 2: Format them for prompt
+        ("rag_memory", state.user_id),
+        query=None,
+        limit=20
+    )
     if user_memories:
         docs_text = "Previously retrieved documents for reference:\n"
         for i, doc in enumerate(user_memories, start=1):
-            content_preview = doc.value.get("content", "")[:300]  # first 300 chars
+            content_preview = doc.value.get("content", "")[:300]
             docs_text += f"- Doc {i}: {content_preview}\n"
     else:
         docs_text = "No prior retrieved documents."
-
     llm = create_llm()
     tools = [azure_ai_search]
     tools_map = {"azure_ai_search": azure_ai_search}
@@ -263,7 +307,31 @@ QUALITY STANDARDS
         print(f"📚 Stored {len(output.retrieved_docs)} RAG docs to PostgresStore")
 
 
+    # ✅ Store answer using cache service (reuse the one from above)
+    print("\n💾 Storing answer in cache...")
+    query_embedding = get_embedding(enriched_query)
+    if query_embedding:
+        # Extract clarification path
+        clarification_path = None
+        if getattr(state, 'clarification_chosen', None):
+            entity = getattr(state, 'clarification_entity', 'unknown')
+            chosen = state.clarification_chosen
+            clarification_path = [f"{entity}:{chosen}"]
+            print(f"   📍 Clarification path: {clarification_path}")
+        cache_service.store_answer(
+            query=enriched_query,
+            original_query=state.user_query,
+            query_embedding=query_embedding,
+            enriched_query=enriched_query,
+            final_answer=output.final_answer,
+            retrieved_docs=[doc.dict() for doc in output.retrieved_docs],
+            clarification_path=clarification_path
+        )
+        print("   ✅ Answer cached")
     return {
         "messages": sanitize_any(all_new_messages),
         "rag_output": sanitize_any(output.dict()),
+        # ✅ Return updated caches
+        "answer_cache": cache_service.answer_cache,
+        "clarification_cache": cache_service.clarification_cache
     }

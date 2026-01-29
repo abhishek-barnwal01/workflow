@@ -43,6 +43,7 @@ from evaluator_node import evaluator_node
 from formatter_node import formatter_node
 from persistence import checkpointer
 from memory_store import store
+from cache_orchestrator_node import cache_orchestrator_node
 
 
 def semantic_router(state: PipelineState):
@@ -70,13 +71,37 @@ def build_graph():
 
     builder = StateGraph(PipelineState)
 
+    builder.add_node("cache_orchestrator", cache_orchestrator_node)
     builder.add_node("semantic", semantic_node)
     builder.add_node("clarification", clarification_node)
     builder.add_node("rag", rag_node)
     # builder.add_node("evaluator", evaluator_node)
     builder.add_node("formatter", formatter_node)
 
-    builder.set_entry_point("semantic")
+    builder.set_entry_point("cache_orchestrator")
+    #builder.set_entry_point("semantic")
+
+    def orchestrator_router(state: PipelineState):
+       """Route based on cache orchestrator result"""
+       print(f"\n🚨 ROUTER DEBUG:")
+       print(f"   State type: {type(state)}")
+       print(f"   Has cache_hit attr: {hasattr(state, 'cache_hit')}")
+       print(f"   cache_hit value: {getattr(state, 'cache_hit', 'MISSING')}")
+       if getattr(state, 'cache_hit', False):
+           return "formatter"  # Direct to formatter
+       elif getattr(state, "needs_clarification_from_cache", False):
+           return "clarification"  # Show cached clarification
+       else:
+           return "semantic"  # Normal flow
+    builder.add_conditional_edges(
+        "cache_orchestrator",
+        orchestrator_router,
+        {
+            "formatter": "formatter",
+            "clarification": "clarification",
+            "semantic": "semantic"
+        }
+    )
     
     # From semantic: route to END if chitchat, else to clarification
     builder.add_conditional_edges(

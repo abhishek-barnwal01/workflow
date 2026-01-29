@@ -144,7 +144,7 @@ Transform the RAW answer above into a POLISHED, PROFESSIONAL response using thes
          A --> C[Lux: 41.6%]
      ```
    - **Math Equations**: Use LaTeX syntax for formulas when needed
-     $$\\text{Growth Rate} = \\frac{\\text{New} - \\text{Old}}{\\text{Old}} \\times 100$$
+     $$\\text{{Growth Rate}} = \\frac{{\\text{{New}} - \\text{{Old}}}}{{\\text{{Old}}}} \\times 100$$
    - **Blockquotes**: Use `>` for important notes or disclaimers
    - **Horizontal Rules**: Use `---` to separate major sections
 
