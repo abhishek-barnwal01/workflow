@@ -70,29 +70,34 @@ def azure_ai_search(
     Args:
         query: Search query text. Use "*" for wildcard search when using filters/facets only (main_data only).
         index_type: "main_data" or "semantic" (two separate indexes)
-        top_k: Number of results (1-50)
-        filter: (MAIN_DATA INDEX ONLY) OData filter expression. Examples:
+        top_k: Number of results (1-100)
+        filter: (MAIN_DATA INDEX ONLY) OData filter expression (CASE-SENSITIVE!). Examples:
             - "file_category_ai eq 'Usage/Attitude (U&A)'"
+            - "file_category_ai eq 'Brand equity'" (lowercase 'e')
+            - "file_category_ai eq 'Concept testing'" (lowercase 't')
             - "locationMetadata/pageNumber eq 6"
             - "document_title eq 'Report.pdf' and locationMetadata/pageNumber eq 6"
-            - "brand_ai eq 'Godrej'"
-            - "country_ai eq 'India'"
             - Combine with 'and' / 'or'
+            CRITICAL: When listing documents, ALWAYS add "and text_document_id ne ''" to get PDF paths (not image paths)!
             NOTE: Do NOT use filter with semantic index.
         facets: (MAIN_DATA INDEX ONLY) List of facetable fields for aggregation/counting.
-            Add ',count:N' to get up to N unique values.
+            Add ',count:N' to get up to N unique values (default is only 10!).
             Facetable fields: document_title, text_document_id, content_path, file_category_ai, country_ai
             Examples: ["document_title,count:1000"], ["file_category_ai,count:100"]
             NOTE: Do NOT use facets with semantic index - it does not have facetable fields.
         skip: (MAIN_DATA INDEX ONLY) Number of results to skip for pagination (default: 0)
         select_fields: (MAIN_DATA INDEX ONLY) Comma-separated list of fields to return.
-            Example: "document_title,content_text,content_path"
+            Example: "document_title,content_path" for listing with clickable links
 
     Returns:
-        JSON with docs, facets (if requested for main_data), and metadata
+        JSON with docs (including page_number from locationMetadata), facets (if requested), and metadata.
+        ALWAYS use page_number in citations: 📄 [filename](content_path) (Page N)
 
-    IMPORTANT: For semantic index, only use query, index_type, and top_k parameters.
-    The filter, facets, skip, and select_fields parameters are ONLY for main_data index.
+    CRITICAL RULES:
+    1. For semantic index: only use query, index_type, and top_k parameters.
+    2. Filters are CASE-SENSITIVE! Use exact category values.
+    3. When listing docs with links: add "text_document_id ne ''" to filter to get PDF paths.
+    4. ALWAYS include page_number in document citations.
     """
 
     index_name = (
