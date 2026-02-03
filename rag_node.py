@@ -68,8 +68,8 @@ def create_llm():
         api_key=config.AZURE_OPENAI_KEY,
         api_version=config.AZURE_OPENAI_API_VERSION,
         temperature=1,
-        timeout=30.0,
-        max_retries=2,
+        timeout=120.0,
+        max_retries=3,
     )
 
 
