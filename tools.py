@@ -68,31 +68,46 @@ def azure_ai_search(
     Search Azure AI Search indexes using hybrid search (keyword + vector).
 
     Args:
-        query: Search query text. Use "*" for wildcard search when using filters/facets only.
+        query: Search query text. Use "*" for wildcard search when using filters/facets only (main_data only).
         index_type: "main_data" or "semantic" (two separate indexes)
         top_k: Number of results (1-50)
-        filter: OData filter expression. Examples:
+        filter: (MAIN_DATA INDEX ONLY) OData filter expression. Examples:
             - "file_category_ai eq 'Usage/Attitude (U&A)'"
             - "locationMetadata/pageNumber eq 6"
             - "document_title eq 'Report.pdf' and locationMetadata/pageNumber eq 6"
             - "brand_ai eq 'Godrej'"
             - "country_ai eq 'India'"
             - Combine with 'and' / 'or'
-        facets: List of facetable fields for aggregation/counting. Add ',count:N' to get up to N unique values.
+            NOTE: Do NOT use filter with semantic index.
+        facets: (MAIN_DATA INDEX ONLY) List of facetable fields for aggregation/counting.
+            Add ',count:N' to get up to N unique values.
             Facetable fields: document_title, text_document_id, content_path, file_category_ai, country_ai
             Examples: ["document_title,count:1000"], ["file_category_ai,count:100"]
-        skip: Number of results to skip for pagination (default: 0)
-        select_fields: Comma-separated list of fields to return. If not specified, returns all fields.
+            NOTE: Do NOT use facets with semantic index - it does not have facetable fields.
+        skip: (MAIN_DATA INDEX ONLY) Number of results to skip for pagination (default: 0)
+        select_fields: (MAIN_DATA INDEX ONLY) Comma-separated list of fields to return.
             Example: "document_title,content_text,content_path"
 
     Returns:
-        JSON with docs, facets (if requested), and metadata
+        JSON with docs, facets (if requested for main_data), and metadata
+
+    IMPORTANT: For semantic index, only use query, index_type, and top_k parameters.
+    The filter, facets, skip, and select_fields parameters are ONLY for main_data index.
     """
 
     index_name = (
         config.MAIN_DATA_INDEX_NAME if index_type == "main_data"
         else config.SEMANTIC_INDEX_NAME
     )
+
+    # For semantic index, ignore advanced parameters (they're not supported)
+    if index_type != "main_data":
+        if filter or facets or skip or select_fields:
+            print(f"   ⚠️ Ignoring filter/facets/skip/select_fields for semantic index (not supported)")
+        filter = None
+        facets = None
+        skip = None
+        select_fields = None
 
     print(f"\n🔍 TOOL CALL: azure_ai_search (HYBRID)")
     print(f"   Query: {query}")
