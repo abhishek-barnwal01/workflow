@@ -15,7 +15,7 @@ def create_llm():
         api_key=config.AZURE_OPENAI_KEY,
         api_version=config.AZURE_OPENAI_API_VERSION,
         temperature=1,
-        timeout=30.0,
+        timeout=120.0,
         max_retries=2,
     )
 
@@ -51,6 +51,18 @@ def formatter_node(state: PipelineState) -> Dict[str, Any]:
     user_query = state.user_query
     rag_final_answer = state.rag_output.final_answer if state.rag_output else ""
     confidence = state.evaluation.confidence_score if state.evaluation else 0.8
+
+    # DEBUG: Print the full RAG output
+    print("\n" + "-"*70)
+    print("🐛 DEBUG: RAG OUTPUT RECEIVED")
+    print("-"*70)
+    if state.rag_output:
+        print(f"RAG Output Type: {type(state.rag_output)}")
+        print(f"RAG Output Keys: {state.rag_output.keys() if hasattr(state.rag_output, 'keys') else 'N/A (not dict)'}")
+        print(f"\nFull RAG Output:\n{json.dumps(state.rag_output, indent=2, default=str)}")
+    else:
+        print("⚠️ RAG Output is None!")
+    print("-"*70)
 
     print(f"\n📝 RAG's answer to format ({len(rag_final_answer)} chars)")
     print(f"🔹 Confidence: {confidence:.2f}")
@@ -107,7 +119,8 @@ Transform the RAW answer above into a POLISHED, PROFESSIONAL response with these
    - At the end, add a "### Sources" section
    - List all referenced documents/reports as bullet points
    - Format: - Always use 📄 [filename](content_path)
-   - Example: - *Soaps Annual Presentation 2022 - Nielsen IQ RMS*
+   - Always include page number when available: 📄 [filename](content_path) (Page N)
+   - Example: - *Soaps Annual Presentation 2022 - Nielsen IQ RMS* (Page 5)
    - Extract cleaned filename by removing UUID prefix
    - Format as markdown links
 
@@ -255,8 +268,8 @@ graph TD
 
 ### Sources
 
-- *Soaps Annual Presentation 2022 - Nielsen IQ RMS*
-- *Toilet Soap Annual Presentation 2022 - Kantar (Feb 22, 2023)*
+- *Soaps Annual Presentation 2022 - Nielsen IQ RMS* (Page 5)
+- *Toilet Soap Annual Presentation 2022 - Kantar (Feb 22, 2023)* (Page 12)
 
 > Note: Data represents MAT Dec'22 period. For the most current figures, please refer to the latest quarterly reports.
 

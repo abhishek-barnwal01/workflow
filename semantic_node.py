@@ -497,35 +497,37 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         enrichment_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a query enrichment agent for specific, targeted questions.
 
-    The user has asked a SPECIFIC question with clear entities/facts mentioned.
-    Your job is to:
-    1. Rephrase the query to be clear and well-structured for RAG search
-    2. Add any helpful context from chat history if available
-    3. Preserve all specific entity names, brands, metrics, time periods mentioned
-    4. Do NOT search for entities - the query is already specific enough
-    5. Do NOT mark as ambiguous - pass this to RAG for direct search
-
-    The RAG node will handle the actual document search using its own tools.
-
+    The user asked a SPECIFIC question with clear entities mentioned.
+    
+    Your job:
+    1. Use chat history to infer context (e.g., if user previously asked "list all U&A reports" and now says "concept testing", infer they mean "list all concept testing reports")
+    2. Rephrase the query briefly and clearly for RAG search
+    3. Preserve all entity names exactly as mentioned
+    4. Keep enrichment MINIMAL - do not enumerate document types, synonyms, or variants
+    5. Set ambiguous = false (this is a specific query)
+    
     Return JSON with:
     {{
-    "enriched_query": "clear, specific version of the query preserving all entity names",
-    "domain_context": {{"query_type": "specific", "entities_mentioned": ["list of entities"]}},
+    "enriched_query": "brief, clear version of the query with context applied",
+    "domain_context": {{"query_type": "specific"}},
     "ambiguity_detected": {{
         "ambiguous": false,
         "entity": null,
         "options": [],
         "reason": null
     }},
-    "reasoning": "brief explanation of how you enriched the query"
+    "reasoning": "one-line explanation of enrichment"
     }}
 
     CRITICAL:
-    - ambiguous MUST be false (this is a specific query)
-    - options MUST be empty array []
-    - Preserve exact entity names from user query"""),
+    - Keep enriched_query SHORT and DIRECT
+    - Do NOT add verbose descriptions, document type enumerations, or synonyms
+    - Example: User says "concept testing" after "list all U&A reports" → enriched_query = "list all concept testing reports"
+    - Example: NOT "Retrieve and list all documents that specifically reference 'Concept testing'..."
+    - ambiguous MUST be false
+    - options MUST be empty array []"""),
             MessagesPlaceholder("messages"),  # Chat history auto-injected
-            ("human", "Query: {user_query}\n\nEnrich this specific query for RAG search.")
+            ("human", "Query: {user_query}\n\nEnrich this specific query briefly, using chat history for context.")
         ])
 
         enrichment_messages = enrichment_prompt.format_messages(
