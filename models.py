@@ -48,9 +48,11 @@ class SemanticOutput(BaseModel):
 class RetrievedDoc(BaseModel):
     model_config = {"extra": "forbid"}
 
-    content: str
+    filename: str
+    content_path: str
     score: float
-    source: str
+    pages: str
+    description: str
 
 
 class RAGOutput(BaseModel):

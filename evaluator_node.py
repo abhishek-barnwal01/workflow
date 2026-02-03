@@ -60,7 +60,7 @@ def evaluator_node(state: PipelineState) -> Dict[str, Any]:
 
     # Show top retrieved docs for debug
     docs_text = "\n\n".join([
-        f"Doc {i+1} (score: {doc.score:.2f}, source: {doc.source}):\n{doc.content[:200]}..."
+        f"Doc {i+1} (score: {doc.score:.2f}, source: {doc.content_path}, pages: {doc.pages}):\n{doc.description[:200]}..."
         for i, doc in enumerate(rag_output.retrieved_docs[:5])
     ])
 
