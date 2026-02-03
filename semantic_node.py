@@ -217,12 +217,13 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         - Action: Enrich query with context, pass to RAG without semantic tool
 
         3. **semantic_specific**: Specific, targeted questions about known entities or facts
-        - Examples: "what is Lux market share in Q3", "show Godrej No.1 sales value growth", "Nielsen IQ data for soap category"
+        - Examples: "what is Lux market share in Q3", "show Godrej No.1 sales value growth", "Nielsen IQ data for soap category", List all U&A reports", "How many Dipstick reports do we have"
         - Characteristics:
           * Question mentions SPECIFIC entities (brand names, products, metrics, reports, time periods)
           * User knows EXACTLY what they're looking for
           * Question is NARROW and FOCUSED on particular data points
           * Not exploratory or open-ended
+          * Any document listing is for SPECIFIC known reports/entities
         - Action: Modify query for RAG search - DO NOT use semantic AI search tool
 
         4. **semantic_broad**: High-level, exploratory questions requiring entity discovery
@@ -240,19 +241,19 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         Ask yourself these questions in order:
 
         Q1: "Does the user mention SPECIFIC entities/brands/products/reports by name?"
-            YES → Likely semantic_specific
+            YES → semantic_specific
             NO → Continue to Q2
 
         Q2: "Is the question EXPLORATORY or asking to DISCOVER/LIST options?"
-            YES → semantic_broad
-            NO → Continue to Q3
-
-        Q3: "Could there be AMBIGUITY that needs resolution before answering?"
-            YES → semantic_broad
+            YES → Check Q3
             NO → semantic_specific
 
-        Q4: "Is this a BROAD question like 'show all X' or 'what products/regions/brands'?"
-            YES → semantic_broad
+        Q3: "Check the chat history BELOW - does it provide context about the entities in this question?"
+            YES (context available in history) → This is semantic_specific (history provides specifics)
+            NO (truly exploratory with no prior context) → semantic_broad
+            
+        Q4: "Could there be AMBIGUITY that needs resolution before answering?"
+            YES (and no context in history to resolve it) → semantic_broad
             NO → semantic_specific
         ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -261,20 +262,24 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         ✓ "Show GN1 sales in MAT Dec'22" → semantic_specific (specific brand + time period)
         ✓ "Nielsen IQ RMS data for soap" → semantic_specific (specific source + category)
 
-        ✗ "What is our market share for soap?" → semantic_broad (ambiguous - which brand?)
-        ✗ "Show all products" → semantic_broad (exploratory - discovering options)
-        ✗ "Compare regions" → semantic_broad (open-ended - which regions?)
-        ✗ "What brands do we have?" → semantic_broad (discovery question)
+        ✗ "What is our market share for soap?" → semantic_broad (ambiguous, no history context)
+        ✗ "Show all products" → semantic_broad (exploratory, no prior context in history)
+        ✗ "Compare regions" → semantic_broad (open-ended, no context in history)
+        ✗ "What brands do we have?" → semantic_broad (discovery question, no prior context)
+        
+        BUT WITH HISTORY CONTEXT:
+        ✓ "Compare regions" (when history shows specific regions already mentioned) → semantic_specific
+        ✓ "Show all of them" (when history clarifies what "them" refers to) → semantic_specific
 
         IMPORTANT:
-        - Check chat history BELOW to understand context
-        - Use conversation flow to inform classification
-        - A follow-up question may reference previous context
-        - When in doubt between semantic_specific and semantic_broad, prefer semantic_specific if ANY specific entity is mentioned
+        - ALWAYS check chat history BELOW before marking as semantic_broad
+        - Use conversation context to determine if entities are already known/established
+        - A follow-up question may reference previous context (making it specific)
+        - Only mark semantic_broad if question is truly exploratory WITH NO historical context
 
         Analyze the query and return your classification with detailed reasoning."""),
             MessagesPlaceholder("messages"),  # Chat history auto-injected here
-            ("human", "Query: {user_query}\n\nClassify this query's intent using the decision logic above.")
+            ("human", "Query: {user_query}\n\nClassify this query's intent using the decision logic above. IMPORTANT: Before classifying as semantic_broad, check the chat history to see if context makes it semantic_specific instead.")
         ])
 
         # Format messages with chat history
@@ -736,7 +741,6 @@ STEP 1: SEARCH FOR ENTITIES
 Call the tool to discover available entities:
     azure_ai_search(query="relevant search terms", index_type="semantic", top_k=?)
 
-You can call the tool MULTIPLE TIMES if needed to fully understand the domain.
 
 STEP 2: CHECK CHAT HISTORY FIRST (CRITICAL)
 BEFORE marking anything as ambiguous:
