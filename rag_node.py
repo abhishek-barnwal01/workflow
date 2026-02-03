@@ -242,38 +242,42 @@ Example: "locationMetadata/pageNumber eq 6 and document_title eq 'Presentation.p
 
 EXAMPLES:
 ✓ Count U&A reports (EFFICIENT - 1 call):
-  azure_ai_search(query="*", index_type="main_data", top_k=10, filter="file_category_ai eq 'Usage/Attitude (U&A)'", facets=["document_title,count:1000"])
+  azure_ai_search(query="*", index_type="main_data", top_k=1, filter="file_category_ai eq 'Usage/Attitude (U&A)'", facets=["document_title,count:1000"])
   → Count facet items = number of documents
 
-✓ List all U&A reports (EFFICIENT - 1 call):
-  azure_ai_search(query="*", index_type="main_data", top_k=10, filter="file_category_ai eq 'Usage/Attitude (U&A)'", facets=["document_title,count:1000"])
-  → Extract facet values = document names
+✓ List all U&A reports WITH CLICKABLE LINKS (EFFICIENT - 1 call):
+  azure_ai_search(query="*", index_type="main_data", top_k=100, filter="file_category_ai eq 'Usage/Attitude (U&A)'", select_fields="document_title,content_path")
+  → Deduplicate by document_title from results to get unique documents with their content_path
+  → DO NOT make individual calls per document - that's inefficient!
+  → If more than 100 docs, use skip parameter for pagination
+
+✓ Count only (no links needed): Use facets with low top_k
+✓ List with links: Use HIGH top_k (100+) with select_fields="document_title,content_path", then deduplicate
 
 ✓ Content search: azure_ai_search(query="Godrej growth 2022", index_type="main_data", top_k=20) - NO facets
 
 ✓ Page 6 of doc: azure_ai_search(query="*", index_type="main_data", top_k=10, filter="locationMetadata/pageNumber eq 6 and document_title eq 'Presentation.pptx'")
 
-✓ Documents in specific path with pagination: azure_ai_search(query="*", index_type="main_data", top_k=20, filter="content_path eq '/reports/2023/'", facets=["document_title,count:1000"], skip=0)
-
 ✓ Content search with custom fields:
   azure_ai_search(query="market share analysis", index_type="main_data", top_k=15, select_fields="document_title,text_document_id,content_path,content_text")
-  Use select_fields only when you need specific output fields
 
-✓ Filter by brand: azure_ai_search(query="*", index_type="main_data", top_k=20, filter="brand_ai eq 'Godrej'", facets=["document_title,count:1000"])
+✓ Filter by brand: azure_ai_search(query="*", index_type="main_data", top_k=100, filter="brand_ai eq 'Godrej'", select_fields="document_title,content_path")
 
-✓ Filter by country: azure_ai_search(query="market share", index_type="main_data", top_k=20, filter="country_ai eq 'India'")
-
-IMPORTANT: Don't use facets for content search - only for counting/listing unique values
+IMPORTANT EFFICIENCY RULES:
+- For COUNTING documents: Use facets (1 call gives count)
+- For LISTING with clickable links: Use HIGH top_k (100+) with select_fields, then deduplicate by document_title
+- NEVER make individual calls per document to get content_path - that's extremely inefficient!
+- Facets only return field values, not content_path. If you need links, use high top_k instead.
 
 Search Strategy Guidelines:
-- For broad exploratory search: Use higher top_k + facets to see document landscape
-- For targeted retrieval: Use focused top_k + filters after identifying relevant sources
-- For document listing: Use query="*" with facets + optional filters
+- For COUNTING documents: Use facets with low top_k (e.g., top_k=1)
+- For LISTING with clickable links: Use HIGH top_k (100+) with select_fields="document_title,content_path", deduplicate results
+- For targeted content retrieval: Use focused top_k + filters
 - For page-specific content: Use filter with locationMetadata/pageNumber
 - Use domain-specific keywords from enriched query
 - Look for high-scoring documents (>0.7 typically indicates strong relevance)
-- Adjust top_k dynamically based on what you find
-- Use pagination (skip) to get more results if needed
+- Use pagination (skip) if you need more than 100 documents
+- NEVER loop through documents one-by-one to get content_path - always batch with high top_k!
 
 STEP 3: Domain-Filtered Document Selection
 CRITICAL RULES:
