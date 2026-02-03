@@ -268,6 +268,27 @@ def azure_ai_search(
                         ]
                     response_data["facets"] = formatted_facets
                     print(f"   📊 Facets: {', '.join(f'{k}: {len(v)} values' for k, v in formatted_facets.items())}")
+
+                    # CRITICAL: Create document_list for easy LLM parsing when faceting by document_title
+                    if "document_title" in formatted_facets:
+                        document_list = []
+                        for facet in formatted_facets["document_title"]:
+                            doc_title = facet["value"]
+                            doc_count = facet["count"]
+
+                            # Find first matching doc to get content_path
+                            matching_doc = next((d for d in docs if d.get("document_title") == doc_title), None)
+                            if matching_doc:
+                                document_list.append({
+                                    "title": doc_title,
+                                    "url": matching_doc.get("content_path", ""),
+                                    "count": doc_count,
+                                    "score": matching_doc.get("score", 0.0)
+                                })
+
+                        response_data["document_list"] = document_list
+                        print(f"   📋 Document List: {len(document_list)} unique documents with URLs")
+
             except Exception as facet_err:
                 print(f"   ⚠️ Facet extraction error: {facet_err}")
 
