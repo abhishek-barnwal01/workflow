@@ -142,10 +142,10 @@ def azure_ai_search(
         else:
             selected = SEMANTIC_SELECT_FIELDS
 
-        # Build search parameters
+        # Build search parameters (allow up to 1000 for listing queries)
         search_kwargs = {
             "search_text": query,
-            "top": min(top_k, 50),
+            "top": min(top_k, 1000),
             "select": selected,
         }
 
@@ -268,6 +268,47 @@ def azure_ai_search(
                         ]
                     response_data["facets"] = formatted_facets
                     print(f"   📊 Facets: {', '.join(f'{k}: {len(v)} values' for k, v in formatted_facets.items())}")
+
+                    # AUTO-BUILD unique_documents mapping for document_title facets
+                    # This removes the burden from the LLM to map titles to content_paths
+                    if "document_title" in formatted_facets:
+                        # Build mapping of document_title -> metadata from docs
+                        title_to_metadata = {}
+                        for doc in docs:
+                            title = doc.get("document_title", "")
+                            if title and title not in title_to_metadata:
+                                title_to_metadata[title] = {
+                                    "content_path": doc.get("content_path", ""),
+                                    "file_category_ai": doc.get("file_category_ai", ""),
+                                    "file_time_period_ai": doc.get("file_time_period_ai", ""),
+                                    "brand_ai": doc.get("brand_ai", ""),
+                                    "product_category_ai": doc.get("product_category_ai", ""),
+                                    "country_ai": doc.get("country_ai", ""),
+                                }
+
+                        # Create unique_documents array with facet counts AND content_path
+                        unique_docs = []
+                        for facet_item in formatted_facets["document_title"]:
+                            title = facet_item["value"]
+                            metadata = title_to_metadata.get(title, {})
+                            unique_docs.append({
+                                "document_title": title,
+                                "content_path": metadata.get("content_path", ""),
+                                "chunk_count": facet_item["count"],
+                                "file_category_ai": metadata.get("file_category_ai", ""),
+                                "file_time_period_ai": metadata.get("file_time_period_ai", ""),
+                                "brand_ai": metadata.get("brand_ai", ""),
+                                "product_category_ai": metadata.get("product_category_ai", ""),
+                                "country_ai": metadata.get("country_ai", ""),
+                            })
+
+                        response_data["unique_documents"] = unique_docs
+                        print(f"   📋 Unique documents with links: {len(unique_docs)}")
+
+                        # Show first 3 unique docs for visibility
+                        for i, udoc in enumerate(unique_docs[:3]):
+                            print(f"      {i+1}. 📄 [{udoc['document_title']}]({udoc['content_path'][:60]}...)")
+
             except Exception as facet_err:
                 print(f"   ⚠️ Facet extraction error: {facet_err}")
 

@@ -213,24 +213,35 @@ To count or list unique documents in ONE call:
    - Add ",count:1000" to get up to 1000 unique documents (default is only 10!)
 2. Set top_k=100 to get document chunks with content_path metadata
 3. Get ALL results in 1 call
-4. Extract facet items = all unique document names
-5. Use documents array to get content_path for each chunk
+4. The response will include a "unique_documents" array with title+content_path already mapped!
+
+⚡⚡⚡ NEW: TOOL NOW RETURNS "unique_documents" ARRAY ⚡⚡⚡
+When you use facets with document_title, the tool response includes:
+- "unique_documents": Array of objects with {{document_title, content_path, file_category_ai, file_time_period_ai, ...}}
+- This is PRE-COMPUTED - no need to manually map titles to content_paths!
+- JUST USE THE unique_documents ARRAY DIRECTLY in your retrieved_docs output!
+
+Example response structure:
+{{
+  "docs": [...],  // raw chunks
+  "facets": {{"document_title": [...]}},  // facet counts
+  "unique_documents": [  // USE THIS DIRECTLY!
+    {{"document_title": "Report.pdf", "content_path": "https://...", "file_time_period_ai": "2024"}},
+    ...
+  ]
+}}
 
 Example for "How many U&A reports?" (1 call):
 {{ query: "*", index_type: "main_data", top_k: 1, filter: "file_category_ai eq 'Usage/Attitude (U&A)' and text_document_id ne ''", facets: ["document_title,count:1000"] }}
-→ Count facet items = total number of documents
+→ Count len(unique_documents) or facet items = total number of documents
 
 Example for "List all U&A reports with links" (1 call - NOT multiple calls):
 {{ query: "*", index_type: "main_data", top_k: 100, filter: "file_category_ai eq 'Usage/Attitude (U&A)' and text_document_id ne ''", facets: ["document_title,count:1000"], select_fields: "document_title,content_path,file_time_period_ai" }}
-→ Response includes:
-   - facets: List of unique document_title values (count = number of documents)
-   - docs: Array of chunks with content_path, file_time_period_ai metadata
-→ Extract ALL facet values for document names (don't filter by type - user asked for "all")
-→ For each unique document name in facets, find its content_path in the docs array
-→ Format results as: 📄 [filename](content_path) - [time period]
-→ Present ALL documents in your answer from this ONE call
-→ CRITICAL: Return facet.count total documents, not just a filtered subset
-→ Example: If facets show 36 documents, return all 36, not just 10 "report-type" items
+→ Response includes "unique_documents" array with ALL documents pre-mapped!
+→ For each item in unique_documents, use document_title and content_path directly
+→ Format results as: 📄 [document_title](content_path)
+→ Include ALL documents from unique_documents in your retrieved_docs
+→ CRITICAL: Return ALL documents, not just a filtered subset
 
 WITHOUT ",count:1000" you'll only get 10 documents maximum!
 
@@ -559,7 +570,52 @@ QUALITY STANDARDS
         RAGOutput, method="function_calling"
     )
     output: RAGOutput = llm_structured.invoke(raw_output)
-    
+
+    # ============================================================
+    # POST-PROCESSING: Fill in missing content_paths from tool results
+    # ============================================================
+    # Extract unique_documents from tool messages to build title -> content_path mapping
+    title_to_metadata = {}
+    for msg in all_new_messages:
+        if hasattr(msg, 'content') and isinstance(msg.content, str):
+            try:
+                tool_result = json.loads(msg.content)
+                # Check for unique_documents (new format from tools.py)
+                if "unique_documents" in tool_result:
+                    for udoc in tool_result["unique_documents"]:
+                        title = udoc.get("document_title", "")
+                        if title and title not in title_to_metadata:
+                            title_to_metadata[title] = {
+                                "content_path": udoc.get("content_path", ""),
+                                "file_category_ai": udoc.get("file_category_ai", ""),
+                                "file_time_period_ai": udoc.get("file_time_period_ai", ""),
+                            }
+                # Also check docs array for backward compatibility
+                if "docs" in tool_result:
+                    for doc in tool_result["docs"]:
+                        title = doc.get("document_title", "")
+                        if title and title not in title_to_metadata:
+                            title_to_metadata[title] = {
+                                "content_path": doc.get("content_path", ""),
+                                "file_category_ai": doc.get("file_category_ai", ""),
+                                "file_time_period_ai": doc.get("file_time_period_ai", ""),
+                            }
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    # Fill in missing content_paths in retrieved_docs
+    if title_to_metadata and output.retrieved_docs:
+        fixed_count = 0
+        for doc in output.retrieved_docs:
+            if not doc.content_path or doc.content_path == "":
+                # Try to find content_path by filename
+                metadata = title_to_metadata.get(doc.filename, {})
+                if metadata.get("content_path"):
+                    doc.content_path = metadata["content_path"]
+                    fixed_count += 1
+        if fixed_count > 0:
+            print(f"   ✅ POST-PROCESSING: Fixed {fixed_count} missing content_paths from tool results")
+
     # DEBUG: Print structured output before returning
     print("\n" + "-"*70)
     print("🐛 DEBUG: RAG NODE - Structured Output")
