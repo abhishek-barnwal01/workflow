@@ -4,7 +4,8 @@
 from typing import Dict, Any, List
 from langchain_openai import AzureChatOpenAI
 from langchain_core.messages import ToolMessage
-
+from langchain_community.document_compressors import FlashrankRerank
+from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tools import azure_ai_search
 from models import RAGOutput, PipelineState
@@ -46,6 +47,65 @@ def filter_sensitive_content(text: str) -> str:
             pass
     
     return filtered
+
+
+def rerank_documents(documents: List[Dict[str, Any]], query: str, top_k: int = 10) -> List[Dict[str, Any]]:
+    """
+    Rerank documents using FlashRank for better relevance ordering.
+    Skip reranking for small result sets where Azure Search scores are already good.
+    
+    Args:
+        documents: List of document chunks from search results
+        query: The user query to rerank against
+        top_k: Number of top reranked documents to return
+    
+    Returns:
+        List of reranked documents sorted by relevance score
+    """
+    try:
+        # Skip reranking for small result sets
+        if not documents or not query or len(documents) < 5:
+            return documents[:top_k]
+        
+        # Initialize FlashRank reranker (uses default model)
+        reranker = FlashrankRerank()
+        
+        # Convert search results to LangChain Document format
+        docs_to_rerank = [
+            Document(
+                page_content=doc.get("content_text", doc.get("description", "")),
+                metadata={
+                    "filename": doc.get("filename", ""),
+                    "content_path": doc.get("content_path", ""),
+                    "pages": doc.get("pages", ""),
+                    "score": doc.get("score", 0),
+                }
+            )
+            for doc in documents if doc.get("content_text") or doc.get("description")
+        ]
+        
+        if not docs_to_rerank:
+            return documents
+        
+        # Rerank documents using FlashRank
+        reranked_docs = reranker.compress_documents(docs_to_rerank, query)
+        
+        # Convert back to original format with FlashRank scores
+        reranked_results = [
+            {
+                **doc.metadata,
+                "content_text": doc.page_content,
+                "flashrank_score": getattr(doc, 'score', 0),
+            }
+            for doc in reranked_docs[:top_k]
+        ]
+        
+        return reranked_results
+    
+    except Exception as e:
+        print(f"⚠️ FlashRank reranking failed: {str(e)}")
+        # Fallback: return original documents if reranking fails
+        return documents[:top_k]
 
 
 # ------------------------------------------------------
@@ -118,7 +178,6 @@ def execute_tool_calls(tool_calls: list, tools_map: dict) -> list:
             )
     return tool_messages
 
-
 def rag_node(state: PipelineState) -> Dict[str, Any]:
     """
     Full RAG node with multi-phase document retrieval, page-level extraction, synthesis,
@@ -136,10 +195,10 @@ def rag_node(state: PipelineState) -> Dict[str, Any]:
     messages = state.messages
 
     user_memories = store.search(
-    ("rag_memory", state.user_id),
-    query=None,   # no semantic filtering, just fetch all
-    limit=20      # adjust as needed
-)
+        ("rag_memory", state.user_id),
+        query=None,   # no semantic filtering, just fetch recent
+        limit=5
+    )
 
 # 🔹 Step 2: Format them for prompt
     if user_memories:
@@ -481,7 +540,7 @@ QUALITY STANDARDS
 
     agent_messages = list(initial_messages)
     all_new_messages = []
-    max_iterations = 5
+    max_iterations = 10
     response = None
 
     for iteration in range(max_iterations):
@@ -532,6 +591,28 @@ QUALITY STANDARDS
 
         if response.tool_calls:
             tool_messages = execute_tool_calls(response.tool_calls, tools_map)
+
+            # � OPTIMIZATION: Parse JSON once, reuse parsed result
+            parsed_results = {}  # Cache parsed JSON to avoid re-parsing
+            for tool_msg in tool_messages:
+                try:
+                    # Only parse once
+                    if tool_msg.content not in parsed_results:
+                        tool_result = json.loads(tool_msg.content)
+                        parsed_results[tool_msg.content] = tool_result
+                    else:
+                        tool_result = parsed_results[tool_msg.content]
+                    
+                    if isinstance(tool_result, dict) and "documents" in tool_result:
+                        original_docs = tool_result.get("documents", [])
+                        if original_docs:
+                            # Rerank using the user query
+                            reranked = rerank_documents(original_docs, user_query, top_k=len(original_docs))
+                            tool_result["documents"] = reranked
+                            tool_msg.content = json.dumps(tool_result)
+                            print(f"✅ Reranked {len(reranked)} documents using FlashRank")
+                except (json.JSONDecodeError, Exception) as e:
+                    print(f"⚠️ Document reranking skipped: {str(e)}")
 
             # 🔹 Sanitize all tool messages
             for tm in tool_messages:

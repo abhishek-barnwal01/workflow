@@ -7,11 +7,21 @@ from openai import AzureOpenAI
 import config
 import json
 from typing import Optional, List
+import hashlib
 
+# 🚀 EMBEDDING CACHE - Avoid regenerating embeddings for same queries
+_embedding_cache = {}
 
 def get_embedding(text: str) -> list:
-    """Get embedding for text using Azure OpenAI"""
+    """Get embedding for text using Azure OpenAI with caching"""
     try:
+        # Cache key based on text hash
+        cache_key = hashlib.md5(text.encode()).hexdigest()
+        
+        # Return cached embedding if available
+        if cache_key in _embedding_cache:
+            return _embedding_cache[cache_key]
+        
         client = AzureOpenAI(
             api_key=config.AZURE_OPENAI_KEY,
             api_version=config.AZURE_OPENAI_API_VERSION,
@@ -23,7 +33,9 @@ def get_embedding(text: str) -> list:
             model=config.AZURE_OPENAI_EMBEDDING_DEPLOYMENT
         )
 
-        return response.data[0].embedding
+        embedding = response.data[0].embedding
+        _embedding_cache[cache_key] = embedding  # Cache for future use
+        return embedding
     except Exception as e:
         print(f"   ⚠️ Embedding error: {e}")
         return None
