@@ -113,8 +113,8 @@ Transform the RAW answer above into a POLISHED, PROFESSIONAL response with these
      |--------|-------|--------|
      | Sales  | $10M  | +15%   |
    - Highlight trends: 📈 for growth, 📉 for decline (when appropriate)
-   - Use visual data relationships, including Mermaid diagrams when appropriate
-
+   - Use visual data relationships, including Mermaid diagrams when only when explicitly requested or when it significantly enhances understanding (avoid overuse)
+ 
 4. CITATIONS & SOURCES
    - At the end, add a "### Sources" section
    - List all referenced documents/reports as bullet points
@@ -285,7 +285,7 @@ Your response should include:
 - Confidence disclaimer if confidence < 0.85
 - Accurate facts maintained
 - Scannable and easy to read structure
-- Advanced formatting (tables, mermaid, code blocks) when it enhances understanding
+- Advanced formatting (tables, mermaid, code blocks) when it is explicitly requested by user or when it enhances understanding
 """
 
     # Invoke LLM with retry logic for jailbreak detection
