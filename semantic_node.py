@@ -340,7 +340,7 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         
         # Agentic chitchat with chat history
         chitchat_prompt_template = ChatPromptTemplate.from_messages([
-            ("system", """You are a helpful enterprise RAG assistant.
+            ("system", """ {memories_text} You are a helpful enterprise RAG assistant.
 
     Generate a brief, friendly response to the user's greeting or casual message.
     - Be warm and professional
@@ -406,7 +406,7 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         
         # Agentic enrichment with chat history
         enrichment_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a query enrichment agent.
+            ("system", """ {memories_text}  You are a query enrichment agent.
 
     The user asked a general knowledge question that doesn't require searching company documents.
 
@@ -426,12 +426,13 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         "reason": null
     }},
     "reasoning": "brief explanation of enrichment"
-    }}"""),
+    }}"""), 
             MessagesPlaceholder("messages"),  # Chat history auto-injected
             ("human", "Query: {user_query}\n\nEnrich this query without searching documents.")
         ])
         
         enrichment_messages = enrichment_prompt.format_messages(
+            memories_text=memories_text,
             messages=chat_history,
             user_query=user_query
         )
@@ -497,40 +498,115 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         enrichment_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a query enrichment agent for specific, targeted questions.
 
-    The user asked a SPECIFIC question with clear entities mentioned.
-    
-    Your job:
-    1. Use chat history to infer context (e.g., if user previously asked "list all U&A reports" and now says "concept testing", infer they mean "list all concept testing reports")
-    2. Rephrase the query briefly and clearly for RAG search
-    3. Preserve all entity names exactly as mentioned
-    4. Keep enrichment MINIMAL - do not enumerate document types, synonyms, or variants
-    5. Set ambiguous = false (this is a specific query)
-    
-    Return JSON with:
-    {{
-    "enriched_query": "brief, clear version of the query with context applied",
-    "domain_context": {{"query_type": "specific"}},
-    "ambiguity_detected": {{
-        "ambiguous": false,
-        "entity": null,
-        "options": [],
-        "reason": null
-    }},
-    "reasoning": "one-line explanation of enrichment"
-    }}
+        🚨 CRITICAL: Before routing to RAG, check if the answer already exists in chat history!
 
-    CRITICAL:
-    - Keep enriched_query SHORT and DIRECT
-    - Do NOT add verbose descriptions, document type enumerations, or synonyms
-    - Example: User says "concept testing" after "list all U&A reports" → enriched_query = "list all concept testing reports"
-    - Example: NOT "Retrieve and list all documents that specifically reference 'Concept testing'..."
-    - ambiguous MUST be false
-    - options MUST be empty array []"""),
+        ---
+        USER MEMORIES (Previously Retrieved Documents):
+        ---
+        {memories_text}
+
+        ---
+        PHASE 0: CHECK HISTORY FIRST
+        ---
+
+        ⚠️ BEFORE enriching for RAG, check if you can answer directly using:
+
+        1. **Recent Chat History** (messages below):
+        - Was this EXACT or VERY SIMILAR question asked recently (last 2-3 messages)?
+        - Is the answer already in a recent AI response?
+        
+        2. **Previously Retrieved Documents** (listed above):
+        - Do these documents already contain the answer?
+        - Is this a follow-up about the same topic/entity?
+
+        📋 DECISION LOGIC:
+
+        IF answer EXISTS in recent history (last 2-3 messages):
+        → ✅ ANSWER DIRECTLY
+        → Set enriched_query = "" (empty string signals: don't go to RAG)
+        → Put the FULL ANSWER in reasoning field
+        → Start answer with: "Based on our previous discussion..." or "As I just mentioned..."
+        → Skip RAG node entirely
+        
+        ELSE IF answer EXISTS in previously retrieved documents:
+        → ✅ ANSWER DIRECTLY  
+        → Set enriched_query = "" (empty string signals: don't go to RAG)
+        → Synthesize answer from documents in reasoning field
+        → Reference specific documents and pages
+        → Skip RAG node entirely
+
+        ELSE IF query is about DIFFERENT topic or needs NEW information:
+        → ❌ ROUTE TO RAG
+        → Set enriched_query = "brief, clear version for RAG search"
+        → Keep reasoning brief: "Enriched query for RAG retrieval"
+
+        EXAMPLES:
+
+        Example 1 (Answer directly - recent history):
+        Current query: "what is the key product likability of GN1 soap"
+        History: [1 message ago: Full answer about GN1 likability drivers provided]
+        Previously Retrieved: 4 GN1 documents
+        → Decision: ✅ ANSWER DIRECTLY
+        → enriched_query: ""
+        → reasoning: "Based on our previous discussion, the key product likeability drivers for Godrej No.1 (GN1) are Value for Money and Uniqueness... [full answer from history]"
+
+        Example 2 (Answer directly - from documents):
+        Current query: "List all U&A reports"
+        History: [2 messages ago: Listed 16 U&A reports]
+        Previously Retrieved: 16 U&A documents with titles
+        → Decision: ✅ ANSWER DIRECTLY
+        → enriched_query: ""
+        → reasoning: "As I mentioned earlier, there are 16 U&A reports: [list all 16 from memory]"
+
+        Example 3 (Route to RAG - different topic):
+        Current query: "List all concept testing reports"
+        History: [Just discussed U&A reports]
+        Previously Retrieved: 16 U&A documents (not concept testing)
+        → Decision: ❌ ROUTE TO RAG
+        → enriched_query: "list all concept testing reports"
+        → reasoning: "Different report category. Routing to RAG for retrieval."
+
+        Example 4 (Route to RAG - no history):
+        Current query: "What is Lux market share?"
+        History: [Empty or discussing unrelated topics]
+        → Decision: ❌ ROUTE TO RAG
+        → enriched_query: "Lux market share data"
+        → reasoning: "No relevant history. Routing to RAG for search."
+
+        Example 5 (Answer directly - follow-up):
+        Current query: "How many documents are there?"
+        History: [Just listed 16 U&A reports]
+        → Decision: ✅ ANSWER DIRECTLY
+        → enriched_query: ""
+        → reasoning: "Based on the list I just provided, there are 16 U&A reports total."
+
+        Return JSON with:
+        {{
+        "enriched_query": "empty string '' if answering directly, otherwise brief query for RAG",
+        "domain_context": {{"query_type": "specific"}},
+        "ambiguity_detected": {{
+            "ambiguous": false,
+            "entity": null,
+            "options": [],
+            "reason": null
+        }},
+        "reasoning": "If answering directly: FULL ANSWER starting with 'Based on our previous discussion...'
+                        If routing to RAG: Brief explanation of enrichment"
+        }}
+
+        CRITICAL RULES:
+        - If enriched_query is EMPTY "" → You answered directly, DON'T route to RAG
+        - If enriched_query has TEXT → Route to RAG for retrieval
+        - When answering directly, reasoning field MUST contain complete answer
+        - Always reference specific documents/pages when available
+        - Start direct answers with: "Based on our previous discussion..." or "As I mentioned..."
+        """),
             MessagesPlaceholder("messages"),  # Chat history auto-injected
-            ("human", "Query: {user_query}\n\nEnrich this specific query briefly, using chat history for context.")
+            ("human", "Query: {user_query}\n\nCheck history first. If answer exists, provide it in reasoning field with enriched_query=''. Otherwise, enrich for RAG.")
         ])
 
         enrichment_messages = enrichment_prompt.format_messages(
+            memories_text=memories_text,  # ✅ ADD THIS - inject previously retrieved docs
             messages=chat_history,
             user_query=user_query
         )
@@ -558,29 +634,59 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
 
         print(f"✅ Enriched Query: {output.enriched_query}")
         print(f"   Reasoning: {output.reasoning}")
-        print("➡️  Passing to RAG node for document search")
 
-        # Store reasoning
-        if output.reasoning:
-            reasoning_message = AIMessage(
+        # ⚠️ NEW LOGIC: Check if semantic node answered directly
+        if not output.enriched_query or output.enriched_query.strip() == "":
+            print("✅ ANSWERED DIRECTLY FROM HISTORY - SKIPPING RAG NODE")
+            print(f"   Direct answer: {output.reasoning[:200]}...")
+            
+            # Create AI message with the direct answer
+            answer_message = AIMessage(
                 content=safe_utf8(output.reasoning),
-                metadata={"type": "internal_reasoning", "node": "semantic"}
+                metadata={"type": "direct_answer", "node": "semantic", "source": "history"}
             )
-            all_new_messages.append(reasoning_message)
+            all_new_messages.append(answer_message)
+            
+            # Return with rag_output populated (to skip RAG node)
+            # Router will see rag_output and go directly to formatter
+            return {
+                "messages": sanitize_any(all_new_messages),
+                "user_memories": sanitize_any(user_memories),
+                "clarification_message": None,
+                "semantic_chitchat": False,
+                "awaiting_clarification": False,
+                "previous_ambiguity": None,
+                "enriched_query": "",  # Empty signals no RAG needed
+                "domain_context": sanitize_any(output.domain_context),
+                "ambiguity_detected": sanitize_any(output.ambiguity_detected.model_dump()),
+                 "clarification_message": safe_utf8(output.reasoning)
+            }
+        else:
 
-        return {
-            "messages": sanitize_any(all_new_messages),
-            "user_memories": sanitize_any(user_memories),
-            "clarification_message": None,  # No clarification for specific questions
-            "semantic_chitchat": False,  # Clear the flag - this is not chitchat
-            "awaiting_clarification": False,  # Clear clarification flag
-            "previous_ambiguity": None,  # Clear previous ambiguity
-            "enriched_query": safe_utf8(output.enriched_query),
-            "domain_context": sanitize_any(output.domain_context),
-            "ambiguity_detected": sanitize_any(
-                output.ambiguity_detected.model_dump()
-            ),
-        }
+
+            print("➡️  Passing to RAG node for document search")
+
+            # Store reasoning
+            if output.reasoning:
+                reasoning_message = AIMessage(
+                    content=safe_utf8(output.reasoning),
+                    metadata={"type": "internal_reasoning", "node": "semantic"}
+                )
+                all_new_messages.append(reasoning_message)
+
+            return {
+                "messages": sanitize_any(all_new_messages),
+                "user_memories": sanitize_any(user_memories),
+                "clarification_message": None,  # No clarification for specific questions
+                "semantic_chitchat": False,  # Clear the flag - this is not chitchat
+                "awaiting_clarification": False,  # Clear clarification flag
+                "previous_ambiguity": None,  # Clear previous ambiguity
+                "enriched_query": safe_utf8(output.enriched_query),
+                "domain_context": sanitize_any(output.domain_context),
+                "ambiguity_detected": sanitize_any(
+                    output.ambiguity_detected.model_dump()
+                ),
+            }
 
     # ========================================================================
     # STEP 2D: SEMANTIC_BROAD - Full tool-calling loop with ambiguity detection
@@ -630,7 +736,7 @@ Example:
 
         # Create prompt template with tool usage instructions
         prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a semantic enrichment agent for HIGH-LEVEL, EXPLORATORY queries.
+            ("system", """ {memories_text} You are a semantic enrichment agent for HIGH-LEVEL, EXPLORATORY queries.
 {clarification_context}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

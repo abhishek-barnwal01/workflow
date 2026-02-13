@@ -220,8 +220,104 @@ def rag_node(state: PipelineState) -> Dict[str, Any]:
     # Full enterprise RAG prompt with expanded index fields support
     prompt_text = """You are an enterprise-grade RAG retrieval and analysis agent. You provide CMI-level research with rigorous document handling and citation practices.
 
+🚨 CRITICAL: You have conversation history and previously retrieved documents. Check these FIRST before searching!
+
 ---
-PHASE 1: INTELLIGENT DOCUMENT DISCOVERY
+PREVIOUSLY RETRIEVED DOCUMENTS:
+---
+{memories_text}
+
+---
+PHASE 0: CHECK HISTORY FIRST ⚠️ MANDATORY ⚠️
+---
+
+⚠️ BEFORE calling azure_ai_search, check if you can answer using existing context:
+
+1. **Recent Chat History** (messages above):
+   - Was this EXACT question asked in the last 2-3 messages?
+   - Is the answer already in a recent response?
+   
+2. **Previously Retrieved Documents** (listed above):
+   - Do these documents already contain the answer?
+   - Is this about the same documents just discussed?
+
+📋 DECISION LOGIC:
+
+✅ SKIP SEARCH (Use history/previous docs) IF:
+  • Query is IDENTICAL to a query in last 2-3 messages
+  • Answer already exists in recent chat history
+  • Asking "how many" about documents just listed
+  • Follow-up about same documents (e.g., "tell me more about the first one")
+
+❌ DO SEARCH (New retrieval needed) IF:
+  • Question is about DIFFERENT topic/entity than previous queries
+  • No relevant history exists (new conversation or old topic)
+  • User explicitly asks for "updated" or "latest" info
+  • Different report category/brand/product than previously discussed
+
+🎯 EXAMPLES OF WHEN TO SKIP SEARCH:
+
+Example 1: Identical Query
+  Current: "List all U&A reports"
+  History: [2 messages ago: Listed 16 U&A reports with links]
+  → Decision: ❌ NO SEARCH
+  → Response: "As I mentioned moments ago, there are 16 U&A reports: [list them from memory]"
+  → retrieved_docs: []
+  → reasoning: "Query is identical to previous. Using cached response from 2 messages ago."
+
+Example 2: Count Query After Listing
+  Current: "How many U&A reports are there?"
+  History: [Just listed 16 U&A reports]
+  Previously Retrieved: 16 U&A documents
+  → Decision: ❌ NO SEARCH
+  → Response: "Based on the list I just provided, there are 16 U&A reports."
+  → retrieved_docs: [the 16 docs from previously retrieved]
+  → reasoning: "Count question about documents just retrieved. Using previous results."
+
+Example 3: Follow-up About Listed Docs
+  Current: "Tell me more about the first report"
+  History: [Just listed reports: "1. Soaps_UA_2024.pdf, 2. Detergents_UA_2023.pdf..."]
+  Previously Retrieved: Contains "Soaps_UA_2024.pdf"
+  → Decision: ❌ NO SEARCH
+  → Response: "The first report, Soaps_UA_2024.pdf, contains..."
+  → retrieved_docs: [Soaps_UA_2024.pdf from previously retrieved]
+  → reasoning: "Follow-up about document just listed. Using previously retrieved content."
+
+🎯 EXAMPLES OF WHEN TO DO SEARCH:
+
+Example 4: Different Category
+  Current: "List all concept testing reports"
+  History: [Just discussed U&A reports]
+  Previously Retrieved: 16 U&A documents
+  → Decision: ✅ SEARCH
+  → Continue to PHASE 1
+  → reasoning: "Different report category (concept testing vs U&A). Previous retrieval not relevant."
+
+Example 5: Different Brand
+  Current: "What is Lux market share?"
+  History: [Just discussed Godrej No.1 market share]
+  Previously Retrieved: Godrej documents
+  → Decision: ✅ SEARCH
+  → Continue to PHASE 1
+  → reasoning: "Different brand (Lux vs Godrej). Need new search."
+
+Example 6: No Previous Context
+  Current: "List all U&A reports"
+  History: [Empty or discussing unrelated topics from 10+ messages ago]
+  → Decision: ✅ SEARCH
+  → Continue to PHASE 1
+  → reasoning: "No recent relevant context. New search required."
+
+⚠️ STRICT RULES FOR SKIPPING SEARCH:
+1. If query is IDENTICAL and within last 2-3 messages → ALWAYS skip, reference previous
+2. Start response with: "As I mentioned..." or "I just listed..." or "Based on our previous discussion..."
+3. If referencing previous answer without using docs → retrieved_docs = []
+4. If using previously retrieved docs → retrieved_docs = those specific docs (not all, just relevant ones)
+5. In reasoning field, ALWAYS explain: "Used previous response/docs because [reason]"
+6. Never search twice for the same thing in same conversation
+
+---
+PHASE 1: INTELLIGENT DOCUMENT DISCOVERY (Only if PHASE 0 decided search IS needed)
 ---
 
 STEP 1: Assess Query Scope
@@ -280,165 +376,61 @@ Example for "How many U&A reports?" (1 call):
 → Count facet items = total number of documents
 
 Example for "List all U&A reports with links" (1 call - NOT multiple calls):
-{{ query: "*", index_type: "main_data", top_k: 100, filter: "file_category_ai eq 'Usage/Attitude (U&A)' and text_document_id ne ''", facets: ["document_title,count:1000"], select_fields: "document_title,content_path,file_time_period_ai" }}
+{{ query: "*", index_type: "main_data", top_k=100, filter: "file_category_ai eq 'Usage/Attitude (U&A)' and text_document_id ne ''", facets: ["document_title,count:1000"], select_fields: "document_title,content_path,file_time_period_ai" }}
+→ Single call gets ALL documents at once
 → Response includes:
-   - facets: List of unique document_title values (count = number of documents)
-   - docs: Array of chunks with content_path, file_time_period_ai metadata
-→ Extract ALL facet values for document names (don't filter by type - user asked for "all")
-→ For each unique document name in facets, find its content_path in the docs array
-→ Format results as: 📄 [filename](content_path) - [time period]
-→ Present ALL documents in your answer from this ONE call
-→ CRITICAL: Return facet.count total documents, not just a filtered subset
-→ Example: If facets show 36 documents, return all 36, not just 10 "report-type" items
+   - facets["document_title"]: Array of all unique documents with their counts
+   - docs[]: Array of document chunks with metadata (content_path, file_time_period_ai, etc.)
+→ Extract all document names from facets
+→ For each document, find its content_path in docs array
+→ Format and present all documents in ONE formatted response
+→ DO NOT make additional individual calls per document!
 
-WITHOUT ",count:1000" you'll only get 10 documents maximum!
-
-WHEN TO USE FACETS (with query="*" for listing):
-1. Counting documents: facets: ["document_title,count:1000"]
-2. Listing document names: facets: ["document_title,count:1000"]
-3. Listing categories: facets: ["file_category_ai,count:100"]
-4. ANY "list all" query: ALWAYS use facets
-
-WHEN NOT TO USE FACETS:
-- Searching for specific content/keywords in documents
-- Finding documents by content relevance
-- Answering questions about document content details
-Example: "Find Godrej growth insights" → Use query text, NO facets (search for relevance)
-
-PARAMETERS:
-- query: Search term for content (use "*" when using filters/facets only)
-- filter: OData filter expressions (CASE-SENSITIVE! Use exact values):
-  * By category: "file_category_ai eq 'Usage/Attitude (U&A)'"
-  * By page: "locationMetadata/pageNumber eq 6"
-  * By document + page: "document_title eq 'Report.pdf' and locationMetadata/pageNumber eq 6"
-  * By brand: "brand_ai eq 'Godrej'"
-  * By country: "country_ai eq 'India'"
-  * Combine with "and" or "or"
-- facets: Array of facetable fields ["document_title,count:1000", "file_category_ai,count:100"]
-- skip: Number of results to skip for pagination (default: 0)
-- select_fields: Comma-separated list of VALID fields ONLY (do NOT use fields that don't exist):
-  Valid fields: content_id, text_document_id, document_title, image_document_id, content_text, 
-                content_path, locationMetadata, file_category_ai, product_category_ai, brand_ai, 
-                file_time_period_ai, country_ai
-  Example: "document_title,content_path" or "document_title,content_path,file_category_ai"
-  INVALID fields to NEVER use: metadata_storage_last_modified, author, owner, created_date, modified_date
-
-EXACT CATEGORY VALUES (file_category_ai) - Use these EXACT strings (case-sensitive):
-- "Brand equity" (lowercase 'e')
-- "Brand track" (lowercase 't')
-- "Concept testing" (lowercase 't')
-- "Link testing" (lowercase 't')
-- "Annual presentation" (lowercase 'p')
-- "Media Optimization" (capital 'O')
-- "Product acceptance testing" (lowercase 'a' and 't')
-- "Miscellaneous" (capital 'M')
-- "Usage/Attitude (U&A)" (capital 'U' and 'A')
-
-CRITICAL FILTER RULES:
-1. Filters are CASE-SENSITIVE! Always use exact category values above.
-   ✗ Wrong: "file_category_ai eq 'Concept Testing'"
-   ✓ Right: "file_category_ai eq 'Concept testing'"
-
-2. When listing documents with content_path, ALWAYS add "and text_document_id ne ''" to filter!
-   Why: Index has both text chunks (original PDFs) and image chunks (extracted images).
-   Without this filter, you may get image paths instead of PDF paths.
-   ✗ Wrong: filter="file_category_ai eq 'Brand equity'" → May return image paths
-   ✓ Right: filter="file_category_ai eq 'Brand equity' and text_document_id ne ''" → Returns PDF paths
-
-3. ALWAYS include page numbers in document citations!
-   Each search result contains locationMetadata/pageNumber - use it in your citations.
-   Format: 📄 [filename](content_path) (Page X)
-   Example: 📄 [Soaps UA 2024.pdf](https://...) (Page 15)
-   Multiple pages: 📄 [Report.pdf](https://...) (Pages 12, 15, 18)
-
-PAGE-SPECIFIC SEARCHES:
-- The index has pageNumber field under locationMetadata
-- To filter by page: use "locationMetadata/pageNumber eq [number]"
-- For specific document + page: combine filters with AND
-Example: "locationMetadata/pageNumber eq 6 and document_title eq 'Presentation.pptx'"
-
-EXAMPLES:
-✓ Count U&A reports (EFFICIENT - 1 call only):
-  azure_ai_search(query="*", index_type="main_data", top_k=1, filter="file_category_ai eq 'Usage/Attitude (U&A)' and text_document_id ne ''", facets=["document_title,count:1000"])
-  → Count facet items = number of documents
-  → Response gives you the count immediately
-
-✓ List all U&A reports with links (EFFICIENT - 1 call only, NOT multiple calls):
-  azure_ai_search(query="*", index_type="main_data", top_k=100, filter="file_category_ai eq 'Usage/Attitude (U&A)' and text_document_id ne ''", facets=["document_title,count:1000"], select_fields="document_title,content_path,file_time_period_ai")
-  → Single call gets ALL documents at once
-  → Response includes:
-     - facets["document_title"]: Array of all unique documents with their counts
-     - docs[]: Array of document chunks with metadata (content_path, file_time_period_ai, etc.)
-  → Extract all document names from facets
-  → For each document, find its content_path in docs array
-  → Format and present all documents in ONE formatted response
-  → DO NOT make additional individual calls per document!
-
-✗ NEVER do this for listing (extremely inefficient):
+⚠️ NEVER do this for listing (extremely inefficient):
   for each_document_title in list:
     azure_ai_search(query="*", filter="document_title eq '{{each_document_title}}' and text_document_id ne ''", ...)
   → This makes 13+ redundant calls when facets can do it in 1!
 
-✓ List concept testing reports (1 call):
+✅ List concept testing reports (1 call):
   azure_ai_search(query="*", index_type="main_data", top_k=100, filter="file_category_ai eq 'Concept testing' and text_document_id ne ''", facets=["document_title,count:1000"], select_fields="document_title,content_path")
 
-✓ List brand equity reports (1 call):
+✅ List brand equity reports (1 call):
   azure_ai_search(query="*", index_type="main_data", top_k=100, filter="file_category_ai eq 'Brand equity' and text_document_id ne ''", facets=["document_title,count:1000"], select_fields="document_title,content_path")
 
-✓ Content search with page attribution (when answering specific questions):
+✅ Content search with page attribution (when answering specific questions):
   azure_ai_search(query="product likability drivers", index_type="main_data", top_k=20)
   → Results include page_number for each chunk
   → In your answer, cite as: 📄 [Soaps UA 2024.pdf](https://...) (Page 23)
   → ALWAYS extract and include the page number!
 
-✓ Page 6 of specific doc (content search):
+✅ Page 6 of specific doc (content search):
   azure_ai_search(query="*", index_type="main_data", top_k=10, filter="locationMetadata/pageNumber eq 6 and document_title eq 'Presentation.pptx'")
 
-✗ Wrong - inefficient document listing (gets image paths, makes multiple calls):
+❌ Wrong - inefficient document listing (gets image paths, makes multiple calls):
   Loop through documents calling:
   azure_ai_search(query="*", index_type="main_data", top_k=100, filter="file_category_ai eq 'Brand equity'", select_fields="document_title,content_path")
   → Makes multiple calls
   → May return image paths instead of PDF paths
 
-✓ Right - efficient document listing (gets all in 1 call with PDF paths):
+✅ Right - efficient document listing (gets all in 1 call with PDF paths):
   azure_ai_search(query="*", index_type="main_data", top_k=100, filter="file_category_ai eq 'Brand equity' and text_document_id ne ''", facets=["document_title,count:1000"], select_fields="document_title,content_path")
 
 IMPORTANT EFFICIENCY RULES - FOLLOW THESE STRICTLY:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1. ⚡ FOR LISTING QUERIES ("List all X", "Show me X documents", "How many X"):
-   - ALWAYS use facets with ONE call
-   - Example: facets=["document_title,count:1000"]
-   - DO NOT loop through documents making individual calls
-   - BAD: 13 calls to retrieve 13 documents ❌
-   - GOOD: 1 call with facets gets all 13 documents ✓
-
-2. ⚡ FOR COUNTING QUERIES ("How many", "Count", "Total number"):
-   - Use facets with top_k=1 (you only need the facet count)
-   - One single call gives you the count
-   - BAD: Multiple calls ❌
-   - GOOD: 1 call with facets ✓
-
-3. ⚡ FOR CONTENT SEARCHES ("Find insights about X", "What does it say about Y"):
-   - Use keyword/vector search without facets (search for relevance)
-   - Set appropriate top_k (10-50 depending on scope)
-   - Include page_number in citations
-
-4. ⚡ NEVER make multiple tool calls in sequence for listing/counting:
-   - Use facets in a single call instead
-   - If you need pagination (>100 docs), use skip parameter in a second call
-   - But DO NOT call the tool once per document!
-
-5. ⚡ ALWAYS validate field names:
-   - Only use fields from: content_id, text_document_id, document_title, image_document_id, 
-     content_text, content_path, locationMetadata, file_category_ai, product_category_ai, 
-     brand_ai, file_time_period_ai, country_ai
-   - DO NOT invent fields like metadata_storage_last_modified, author, owner
-
-PERFORMANCE IMPACT:
-- Facet-based listing: 1 call, <1 second response
-- Loop-based listing: 13+ calls, 5-10+ second response
-- Use facets! Your queries will be 10-100x faster!
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ 1. ⚡ FOR LISTING QUERIES ("List all X", "Show me X documents"):    
+    - ALWAYS use facets with ONE call                                 
+    - Example: facets=["document_title,count:1000"]                   
+    - DO NOT loop through documents making individual calls           
+    - BAD: 13 calls to retrieve 13 documents ❌                       
+    - GOOD: 1 call with facets gets all 13 documents ✅               
+                                                                       
+ 2. ⚡ FOR COUNTING QUERIES ("How many", "Count", "Total number"):   
+    - Use facets with top_k=1 (you only need the facet count)        
+    - One single call gives you the count                             
+                                                                       
+ 3. ⚡ FOR CONTENT SEARCHES ("Find insights about X"):                
+    - Use keyword/vector search without facets                        
+    - Set appropriate top_k (10-50)                                   
+   - Include page_number in citations                                
 
 Search Strategy Guidelines:
 - For COUNTING documents: Use facets with top_k=1 (1 call)
@@ -471,29 +463,11 @@ STEP 7: Synthesize Professional Answer
 - Key Takeaways (3-5 bullets)
 
 CRITICAL: NEVER FILTER DOCUMENTS IN retrieved_docs
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚡ FOR LISTING QUERIES: Return ALL documents from search results, NOT a filtered subset
-❌ DO NOT filter by "report-type" or "formal deliverables"
-❌ DO NOT limit to 10-11 items when search returned 36+ documents
-❌ DO NOT apply your own classification (e.g., "only reports, not proposals")
-✓ DO extract all unique document titles from the facet results
-✓ DO include ALL documents in retrieved_docs array
-✓ DO accurately represent the total count in final_answer
-
-EXAMPLES:
-- Search returns 36 documents → Include all 36 in retrieved_docs array
-- Search returns 50 documents → Include all 50, not just 10-11 "report" items
-- If facets show 36 unique titles → Extract and list all 36 titles
-
-For "List all Concept testing documents":
-- facets returned: document_title array with 36 unique values
-- Your response MUST include all 36 documents in retrieved_docs
-- DO NOT filter to only "reports" or "formal deliverables"
-- Statement: "Found 36 documents" not "11 documents identified as formal reports"
-
-For "Show me U&A documents with links":
-- If search returns 25 documents → include all 25
-- DO NOT reduce to 8-10 "report-type" items
+ ⚡ FOR LISTING QUERIES: Return ALL documents from search results     
+ ❌ DO NOT filter by "report-type" or "formal deliverables"           
+ ❌ DO NOT limit to 10-11 items when search returned 36+ documents    
+ ✅ DO extract all unique document titles from facet results          
+ ✅ DO include ALL documents in retrieved_docs array                  
 
 DOCUMENT REFERENCE FORMATTING
 - Always use 📄 [filename](content_path) (Page N)
@@ -524,8 +498,9 @@ QUALITY STANDARDS
 - Clear separation of summary vs. detailed analysis
 - Transparent about search strategy
 - Include page references for verifiability
-"""
+- When using previous context, explicitly state: "Based on our previous discussion..." or "As mentioned earlier..."
 
+"""
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", prompt_text),
@@ -537,6 +512,33 @@ QUALITY STANDARDS
     initial_messages = prompt.format_messages(
         user_query=user_query, enriched_query=enriched_query, messages=messages,memories_text=docs_text
     )
+
+    print("\n" + "🔍"*35)
+    print("DEBUG: RAG PHASE 0 - Checking if history/memories are present")
+    print("🔍"*35)
+
+    # Check system message for memories
+    if initial_messages and len(initial_messages) > 0:
+        first_msg = initial_messages[0]
+        if hasattr(first_msg, 'content'):
+            content = str(first_msg.content)
+            if "PREVIOUSLY RETRIEVED DOCUMENTS" in content:
+                print("✅ Memories section found in system prompt")
+                # Extract memories section
+                start = content.find("PREVIOUSLY RETRIEVED DOCUMENTS")
+                end = content.find("PHASE 0", start)
+                if start != -1 and end != -1:
+                    memories_section = content[start:end]
+                    print(f"📚 Memories preview:\n{memories_section[:500]}")
+            else:
+                print("❌ Memories section NOT found in system prompt")
+
+    # Check chat history messages
+    history_count = sum(1 for msg in initial_messages 
+                    if msg.__class__.__name__ in ['HumanMessage', 'AIMessage'])
+    print(f"💬 Chat history messages: {history_count}")
+
+    print("="*70 + "\n")
 
     agent_messages = list(initial_messages)
     all_new_messages = []

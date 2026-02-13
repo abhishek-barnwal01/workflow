@@ -48,6 +48,21 @@ def formatter_node(state: PipelineState) -> Dict[str, Any]:
     print("✨ FORMATTER NODE")
     print("="*70)
 
+    if state.clarification_message and not state.rag_output:
+        print("📝 Formatting non-RAG response (direct answer or clarification)")
+        
+        return {
+            "messages": sanitize_any(state.messages),
+            "formatted": {
+                "formatted_response": safe_utf8(state.clarification_message),
+                "metadata": {
+                    "source": "semantic_direct" if not state.awaiting_clarification else "clarification",
+                    "confidence": 1.0,
+                    "used_history": True if not state.awaiting_clarification else False
+                }
+            }
+        }
+
     user_query = state.user_query
     rag_final_answer = state.rag_output.final_answer if state.rag_output else ""
     confidence = state.evaluation.confidence_score if state.evaluation else 0.8

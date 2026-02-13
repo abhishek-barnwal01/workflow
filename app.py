@@ -43,7 +43,8 @@ def chat():
         )
 
         clarification_msg = result.get("clarification_message")
-        if clarification_msg:
+        awaiting_clarification = result.get("awaiting_clarification", False)
+        if clarification_msg and awaiting_clarification:
             # Return clarification to user without running RAG
             return jsonify({
                 "response": clarification_msg,

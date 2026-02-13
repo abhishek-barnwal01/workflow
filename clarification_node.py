@@ -3,6 +3,21 @@ from models import PipelineState
 from typing import Dict, Any
 
 def clarification_node(state: PipelineState) -> Dict[str, Any]:
+
+    if state.clarification_message and (not state.ambiguity_detected or not state.ambiguity_detected.ambiguous):
+        print("\n📌 Clarification Node: Semantic provided direct answer")
+        print(f"   Preserving answer: {state.clarification_message[:100]}...")
+        print("   Routing to END (skip RAG)")
+        
+        return {
+            "messages": state.messages,
+            "clarification_message": state.clarification_message,  # Preserve it
+            "awaiting_clarification": False,
+            "previous_ambiguity": None,
+            "enriched_query": state.enriched_query,
+            "ambiguity_detected": state.ambiguity_detected,
+        }
+    
     ambiguity = state.ambiguity_detected
 
     # If no ambiguity, do nothing
