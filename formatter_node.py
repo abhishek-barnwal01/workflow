@@ -22,7 +22,10 @@ def create_llm():
 def safe_utf8(text: str) -> str:
     if not text:
         return ""
-    return text.encode("utf-8", errors="replace").decode("utf-8")
+    # Replace invalid UTF-8 characters with '?'
+    # Also remove null bytes which PostgreSQL cannot handle in JSON
+    cleaned = text.encode("utf-8", errors="replace").decode("utf-8")
+    return cleaned.replace("\x00", "")
 
 def sanitize_any(obj):
     if obj is None:

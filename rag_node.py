@@ -19,7 +19,9 @@ def safe_utf8(text: str) -> str:
     if not text:
         return ""
     # Replace invalid UTF-8 characters with '?'
-    return text.encode("utf-8", errors="replace").decode("utf-8")
+    # Also remove null bytes which PostgreSQL cannot handle in JSON
+    cleaned = text.encode("utf-8", errors="replace").decode("utf-8")
+    return cleaned.replace("\x00", "")
 
 
 def filter_sensitive_content(text: str) -> str:
