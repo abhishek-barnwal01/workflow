@@ -4,11 +4,10 @@
 from typing import Dict, Any, List
 from langchain_openai import AzureChatOpenAI
 from langchain_core.messages import ToolMessage
-from langchain_community.document_compressors import FlashrankRerank
-from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tools import azure_ai_search
 from models import RAGOutput, PipelineState
+import asyncio
 import config
 import json
 from memory_store import store
@@ -19,7 +18,9 @@ def safe_utf8(text: str) -> str:
     if not text:
         return ""
     # Replace invalid UTF-8 characters with '?'
-    return text.encode("utf-8", errors="replace").decode("utf-8")
+    # Also remove null bytes which PostgreSQL cannot handle in JSON
+    cleaned = text.encode("utf-8", errors="replace").decode("utf-8")
+    return cleaned.replace("\x00", "")
 
 
 def filter_sensitive_content(text: str) -> str:
@@ -49,65 +50,6 @@ def filter_sensitive_content(text: str) -> str:
     return filtered
 
 
-def rerank_documents(documents: List[Dict[str, Any]], query: str, top_k: int = 10) -> List[Dict[str, Any]]:
-    """
-    Rerank documents using FlashRank for better relevance ordering.
-    Skip reranking for small result sets where Azure Search scores are already good.
-    
-    Args:
-        documents: List of document chunks from search results
-        query: The user query to rerank against
-        top_k: Number of top reranked documents to return
-    
-    Returns:
-        List of reranked documents sorted by relevance score
-    """
-    try:
-        # Skip reranking for small result sets
-        if not documents or not query or len(documents) < 5:
-            return documents[:top_k]
-        
-        # Initialize FlashRank reranker (uses default model)
-        reranker = FlashrankRerank()
-        
-        # Convert search results to LangChain Document format
-        docs_to_rerank = [
-            Document(
-                page_content=doc.get("content_text", doc.get("description", "")),
-                metadata={
-                    "filename": doc.get("filename", ""),
-                    "content_path": doc.get("content_path", ""),
-                    "pages": doc.get("pages", ""),
-                    "score": doc.get("score", 0),
-                }
-            )
-            for doc in documents if doc.get("content_text") or doc.get("description")
-        ]
-        
-        if not docs_to_rerank:
-            return documents
-        
-        # Rerank documents using FlashRank
-        reranked_docs = reranker.compress_documents(docs_to_rerank, query)
-        
-        # Convert back to original format with FlashRank scores
-        reranked_results = [
-            {
-                **doc.metadata,
-                "content_text": doc.page_content,
-                "flashrank_score": getattr(doc, 'score', 0),
-            }
-            for doc in reranked_docs[:top_k]
-        ]
-        
-        return reranked_results
-    
-    except Exception as e:
-        print(f"⚠️ FlashRank reranking failed: {str(e)}")
-        # Fallback: return original documents if reranking fails
-        return documents[:top_k]
-
-
 # ------------------------------------------------------
 def sanitize_any(obj):
     if obj is None:
@@ -133,50 +75,107 @@ def create_llm():
     )
 
 
-def execute_tool_calls(tool_calls: list, tools_map: dict) -> list:
-    tool_messages = []
-    for tool_call in tool_calls:
-        if hasattr(tool_call, "name"):
-            tool_name = tool_call.name
-            tool_args = tool_call.args
-            tool_id = tool_call.id
-        else:
-            tool_name = tool_call["name"]
-            tool_args = tool_call["args"]
-            tool_id = tool_call["id"]
+async def _invoke_single_tool_async(tool_call, tools_map: dict) -> ToolMessage:
+    """Execute a single tool call asynchronously and return a ToolMessage."""
+    if hasattr(tool_call, "name"):
+        tool_name = tool_call.name
+        tool_args = tool_call.args
+        tool_id = tool_call.id
+    else:
+        tool_name = tool_call["name"]
+        tool_args = tool_call["args"]
+        tool_id = tool_call["id"]
 
-        if isinstance(tool_args, str):
-            try:
-                tool_args = json.loads(tool_args)
-            except json.JSONDecodeError:
-                tool_messages.append(
-                    ToolMessage(
-                        content=json.dumps(
-                            {"error": f"Invalid JSON in tool args: {tool_args}"}
-                        ),
-                        tool_call_id=tool_id,
-                    )
-                )
-                continue
-
-        if tool_name in tools_map:
-            try:
-                result = tools_map[tool_name].invoke(tool_args)
-                tool_messages.append(ToolMessage(content=result, tool_call_id=tool_id))
-            except Exception as e:
-                tool_messages.append(
-                    ToolMessage(
-                        content=json.dumps({"error": str(e)}), tool_call_id=tool_id
-                    )
-                )
-        else:
-            tool_messages.append(
-                ToolMessage(
-                    content=json.dumps({"error": f"Unknown tool: {tool_name}"}),
-                    tool_call_id=tool_id,
-                )
+    if isinstance(tool_args, str):
+        try:
+            tool_args = json.loads(tool_args)
+        except json.JSONDecodeError:
+            return ToolMessage(
+                content=json.dumps({"error": f"Invalid JSON in tool args: {tool_args}"}),
+                tool_call_id=tool_id,
             )
-    return tool_messages
+
+    if tool_name in tools_map:
+        try:
+            # Run sync tool.invoke in a thread to avoid blocking the event loop
+            result = await asyncio.to_thread(tools_map[tool_name].invoke, tool_args)
+            return ToolMessage(content=result, tool_call_id=tool_id)
+        except Exception as e:
+            return ToolMessage(
+                content=json.dumps({"error": str(e)}), tool_call_id=tool_id
+            )
+    else:
+        return ToolMessage(
+            content=json.dumps({"error": f"Unknown tool: {tool_name}"}),
+            tool_call_id=tool_id,
+        )
+
+
+def execute_tool_calls(tool_calls: list, tools_map: dict) -> list:
+    """Execute tool calls in parallel using asyncio.gather."""
+    if len(tool_calls) <= 1:
+        # Single call — run synchronously (no async overhead)
+        return [_invoke_single_tool_sync(tc, tools_map) for tc in tool_calls]
+
+    print(f"  ⚡ Executing {len(tool_calls)} tool calls in parallel (asyncio.gather)")
+
+    async def _gather_all():
+        return await asyncio.gather(
+            *[_invoke_single_tool_async(tc, tools_map) for tc in tool_calls]
+        )
+
+    # If an event loop is already running, use it; otherwise create one
+    if _is_event_loop_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            results = pool.submit(asyncio.run, _gather_all()).result()
+        return list(results)
+    else:
+        return list(asyncio.run(_gather_all()))
+
+
+def _is_event_loop_running() -> bool:
+    """Check if an asyncio event loop is already running."""
+    try:
+        loop = asyncio.get_running_loop()
+        return loop.is_running()
+    except RuntimeError:
+        return False
+
+
+def _invoke_single_tool_sync(tool_call, tools_map: dict) -> ToolMessage:
+    """Synchronous fallback for single tool call execution."""
+    if hasattr(tool_call, "name"):
+        tool_name = tool_call.name
+        tool_args = tool_call.args
+        tool_id = tool_call.id
+    else:
+        tool_name = tool_call["name"]
+        tool_args = tool_call["args"]
+        tool_id = tool_call["id"]
+
+    if isinstance(tool_args, str):
+        try:
+            tool_args = json.loads(tool_args)
+        except json.JSONDecodeError:
+            return ToolMessage(
+                content=json.dumps({"error": f"Invalid JSON in tool args: {tool_args}"}),
+                tool_call_id=tool_id,
+            )
+
+    if tool_name in tools_map:
+        try:
+            result = tools_map[tool_name].invoke(tool_args)
+            return ToolMessage(content=result, tool_call_id=tool_id)
+        except Exception as e:
+            return ToolMessage(
+                content=json.dumps({"error": str(e)}), tool_call_id=tool_id
+            )
+    else:
+        return ToolMessage(
+            content=json.dumps({"error": f"Unknown tool: {tool_name}"}),
+            tool_call_id=tool_id,
+        )
 
 def rag_node(state: PipelineState) -> Dict[str, Any]:
     """
@@ -217,289 +216,87 @@ def rag_node(state: PipelineState) -> Dict[str, Any]:
     tools_map = {"azure_ai_search": azure_ai_search}
     llm_with_tools = llm.bind_tools(tools)
 
-    # Full enterprise RAG prompt with expanded index fields support
-    prompt_text = """You are an enterprise-grade RAG retrieval and analysis agent. You provide CMI-level research with rigorous document handling and citation practices.
-
-🚨 CRITICAL: You have conversation history and previously retrieved documents. Check these FIRST before searching!
-
----
-PREVIOUSLY RETRIEVED DOCUMENTS:
----
-{memories_text}
-
----
-PHASE 0: CHECK HISTORY FIRST ⚠️ MANDATORY ⚠️
----
-
-⚠️ BEFORE calling azure_ai_search, check if you can answer using existing context:
-
-1. **Recent Chat History** (messages above):
-   - Was this EXACT question asked in the last 2-3 messages?
-   - Is the answer already in a recent response?
-   
-2. **Previously Retrieved Documents** (listed above):
-   - Do these documents already contain the answer?
-   - Is this about the same documents just discussed?
-
-📋 DECISION LOGIC:
-
-✅ SKIP SEARCH (Use history/previous docs) IF:
-  • Query is IDENTICAL to a query in last 2-3 messages
-  • Answer already exists in recent chat history
-  • Asking "how many" about documents just listed
-  • Follow-up about same documents (e.g., "tell me more about the first one")
-
-❌ DO SEARCH (New retrieval needed) IF:
-  • Question is about DIFFERENT topic/entity than previous queries
-  • No relevant history exists (new conversation or old topic)
-  • User explicitly asks for "updated" or "latest" info
-  • Different report category/brand/product than previously discussed
-
-🎯 EXAMPLES OF WHEN TO SKIP SEARCH:
-
-Example 1: Identical Query
-  Current: "List all U&A reports"
-  History: [2 messages ago: Listed 16 U&A reports with links]
-  → Decision: ❌ NO SEARCH
-  → Response: "As I mentioned moments ago, there are 16 U&A reports: [list them from memory]"
-  → retrieved_docs: []
-  → reasoning: "Query is identical to previous. Using cached response from 2 messages ago."
-
-Example 2: Count Query After Listing
-  Current: "How many U&A reports are there?"
-  History: [Just listed 16 U&A reports]
-  Previously Retrieved: 16 U&A documents
-  → Decision: ❌ NO SEARCH
-  → Response: "Based on the list I just provided, there are 16 U&A reports."
-  → retrieved_docs: [the 16 docs from previously retrieved]
-  → reasoning: "Count question about documents just retrieved. Using previous results."
-
-Example 3: Follow-up About Listed Docs
-  Current: "Tell me more about the first report"
-  History: [Just listed reports: "1. Soaps_UA_2024.pdf, 2. Detergents_UA_2023.pdf..."]
-  Previously Retrieved: Contains "Soaps_UA_2024.pdf"
-  → Decision: ❌ NO SEARCH
-  → Response: "The first report, Soaps_UA_2024.pdf, contains..."
-  → retrieved_docs: [Soaps_UA_2024.pdf from previously retrieved]
-  → reasoning: "Follow-up about document just listed. Using previously retrieved content."
-
-🎯 EXAMPLES OF WHEN TO DO SEARCH:
-
-Example 4: Different Category
-  Current: "List all concept testing reports"
-  History: [Just discussed U&A reports]
-  Previously Retrieved: 16 U&A documents
-  → Decision: ✅ SEARCH
-  → Continue to PHASE 1
-  → reasoning: "Different report category (concept testing vs U&A). Previous retrieval not relevant."
-
-Example 5: Different Brand
-  Current: "What is Lux market share?"
-  History: [Just discussed Godrej No.1 market share]
-  Previously Retrieved: Godrej documents
-  → Decision: ✅ SEARCH
-  → Continue to PHASE 1
-  → reasoning: "Different brand (Lux vs Godrej). Need new search."
-
-Example 6: No Previous Context
-  Current: "List all U&A reports"
-  History: [Empty or discussing unrelated topics from 10+ messages ago]
-  → Decision: ✅ SEARCH
-  → Continue to PHASE 1
-  → reasoning: "No recent relevant context. New search required."
-
-⚠️ STRICT RULES FOR SKIPPING SEARCH:
-1. If query is IDENTICAL and within last 2-3 messages → ALWAYS skip, reference previous
-2. Start response with: "As I mentioned..." or "I just listed..." or "Based on our previous discussion..."
-3. If referencing previous answer without using docs → retrieved_docs = []
-4. If using previously retrieved docs → retrieved_docs = those specific docs (not all, just relevant ones)
-5. In reasoning field, ALWAYS explain: "Used previous response/docs because [reason]"
-6. Never search twice for the same thing in same conversation
-
----
-PHASE 1: INTELLIGENT DOCUMENT DISCOVERY (Only if PHASE 0 decided search IS needed)
----
+    # Focused RAG prompt - tool description handles "how to use the tool"
+    prompt_text = """You are a RAG retrieval and analysis agent. Use the azure_ai_search tool to find documents, then synthesize professional answers with citations.
 
 STEP 1: Assess Query Scope
 - Determine if the query requires single or multiple documents
 - Identify the primary domain/topic (e.g., market share analysis, consumer insights, financial metrics)
 - Establish relevance criteria for document selection
-- Determine if the query needs page-specific content, document listing, or category-based filtering
 
-STEP 2: Execute Strategic Search - ALWAYS USE FACETS FOR LISTING QUERIES
-Call tool: azure_ai_search(query="...", index_type="main_data", top_k=?)
-
-⚡⚡⚡ CRITICAL: FOR ANY "LIST" OR "COUNT" QUERY, USE FACETS IMMEDIATELY ⚡⚡⚡
-MAKE ONLY 1 EFFICIENT CALL - DO NOT MAKE MULTIPLE CALLS!
-
-For "List all U&A reports" queries:
-→ Use THIS (1 call gets everything):
-  azure_ai_search(query="*", index_type="main_data", top_k=100, 
-                 filter="file_category_ai eq 'Usage/Attitude (U&A)' and text_document_id ne ''", 
-                 facets=["document_title,count:1000"], 
-                 select_fields="document_title,content_path,file_time_period_ai")
-
-→ DO NOT use THIS (13+ inefficient calls):
-  Loop through each document title making individual calls like:
-  azure_ai_search(query="*", filter="document_title eq 'Doc1.pdf' and text_document_id ne ''", ...)
-  azure_ai_search(query="*", filter="document_title eq 'Doc2.pdf' and text_document_id ne ''", ...)
-  ... (repeat for every document) ❌ NEVER DO THIS!
-
-MANDATORY parameters:
-- query: Search text or "*" for wildcard
-- index_type: "main_data"
-- top_k: Number of results (1-100)
-
-OPTIONAL parameters (use only when needed):
-- filter: OData filter expression (for document filtering, page filtering, category filtering, etc.)
-- facets: List of facetable fields (for counting/listing unique values) - USE FOR LISTING QUERIES!
-- skip: Number of results to skip (for pagination)
-- select_fields: Comma-separated fields to return (ONLY use valid fields below - DO NOT invent fields!)
-  Valid fields ONLY: "document_title,content_path,content_id,text_document_id,content_text,file_category_ai,product_category_ai,brand_ai,file_time_period_ai,country_ai,locationMetadata"
-  WRONG: "document_title,content_path,metadata_storage_last_modified,author,owner" (these fields DO NOT exist!)
-  RIGHT: "document_title,content_path" or "document_title,content_path,file_category_ai"
-
-IMPORTANT: The index contains document CHUNKS, not whole documents. Each document is split into multiple chunks.
-
-⚡ EFFICIENT DOCUMENT LISTING - USE FACETS (1 CALL ONLY!):
-The index has document_title and text_document_id as FACETABLE fields.
-To count or list unique documents in ONE call:
-1. Use facets: ["document_title,count:1000"] - REQUIRED for listing
-   - Add ",count:1000" to get up to 1000 unique documents (default is only 10!)
-2. Set top_k=100 to get document chunks with content_path metadata
-3. Get ALL results in 1 call
-4. Extract facet items = all unique document names
-5. Use documents array to get content_path for each chunk
-
-Example for "How many U&A reports?" (1 call):
-{{ query: "*", index_type: "main_data", top_k: 1, filter: "file_category_ai eq 'Usage/Attitude (U&A)' and text_document_id ne ''", facets: ["document_title,count:1000"] }}
-→ Count facet items = total number of documents
-
-Example for "List all U&A reports with links" (1 call - NOT multiple calls):
-{{ query: "*", index_type: "main_data", top_k=100, filter: "file_category_ai eq 'Usage/Attitude (U&A)' and text_document_id ne ''", facets: ["document_title,count:1000"], select_fields: "document_title,content_path,file_time_period_ai" }}
-→ Single call gets ALL documents at once
-→ Response includes:
-   - facets["document_title"]: Array of all unique documents with their counts
-   - docs[]: Array of document chunks with metadata (content_path, file_time_period_ai, etc.)
-→ Extract all document names from facets
-→ For each document, find its content_path in docs array
-→ Format and present all documents in ONE formatted response
-→ DO NOT make additional individual calls per document!
-
-⚠️ NEVER do this for listing (extremely inefficient):
-  for each_document_title in list:
-    azure_ai_search(query="*", filter="document_title eq '{{each_document_title}}' and text_document_id ne ''", ...)
-  → This makes 13+ redundant calls when facets can do it in 1!
-
-✅ List concept testing reports (1 call):
-  azure_ai_search(query="*", index_type="main_data", top_k=100, filter="file_category_ai eq 'Concept testing' and text_document_id ne ''", facets=["document_title,count:1000"], select_fields="document_title,content_path")
-
-✅ List brand equity reports (1 call):
-  azure_ai_search(query="*", index_type="main_data", top_k=100, filter="file_category_ai eq 'Brand equity' and text_document_id ne ''", facets=["document_title,count:1000"], select_fields="document_title,content_path")
-
-✅ Content search with page attribution (when answering specific questions):
-  azure_ai_search(query="product likability drivers", index_type="main_data", top_k=20)
-  → Results include page_number for each chunk
-  → In your answer, cite as: 📄 [Soaps UA 2024.pdf](https://...) (Page 23)
-  → ALWAYS extract and include the page number!
-
-✅ Page 6 of specific doc (content search):
-  azure_ai_search(query="*", index_type="main_data", top_k=10, filter="locationMetadata/pageNumber eq 6 and document_title eq 'Presentation.pptx'")
-
-❌ Wrong - inefficient document listing (gets image paths, makes multiple calls):
-  Loop through documents calling:
-  azure_ai_search(query="*", index_type="main_data", top_k=100, filter="file_category_ai eq 'Brand equity'", select_fields="document_title,content_path")
-  → Makes multiple calls
-  → May return image paths instead of PDF paths
-
-✅ Right - efficient document listing (gets all in 1 call with PDF paths):
-  azure_ai_search(query="*", index_type="main_data", top_k=100, filter="file_category_ai eq 'Brand equity' and text_document_id ne ''", facets=["document_title,count:1000"], select_fields="document_title,content_path")
-
-IMPORTANT EFFICIENCY RULES - FOLLOW THESE STRICTLY:
- 1. ⚡ FOR LISTING QUERIES ("List all X", "Show me X documents"):    
-    - ALWAYS use facets with ONE call                                 
-    - Example: facets=["document_title,count:1000"]                   
-    - DO NOT loop through documents making individual calls           
-    - BAD: 13 calls to retrieve 13 documents ❌                       
-    - GOOD: 1 call with facets gets all 13 documents ✅               
-                                                                       
- 2. ⚡ FOR COUNTING QUERIES ("How many", "Count", "Total number"):   
-    - Use facets with top_k=1 (you only need the facet count)        
-    - One single call gives you the count                             
-                                                                       
- 3. ⚡ FOR CONTENT SEARCHES ("Find insights about X"):                
-    - Use keyword/vector search without facets                        
-    - Set appropriate top_k (10-50)                                   
-   - Include page_number in citations                                
-
+STEP 2: Execute Strategic Search
+Call tool: azure ai search
 Search Strategy Guidelines:
-- For COUNTING documents: Use facets with top_k=1 (1 call)
-- For LISTING with links: Use facets + select_fields in ONE call (not multiple)
-- For targeted content retrieval: Use focused top_k + filters + keyword/vector search
-- For page-specific content: Use filter with locationMetadata/pageNumber
-- ALWAYS include page numbers in citations from locationMetadata/pageNumber
-- Use pagination (skip) if you need more than 100 documents
-- NEVER loop through documents one-by-one - always batch with facets!
+- Use domain-specific keywords from the query
+- Look for high-scoring documents
+- For broad exploratory search: use general terms
+- For targeted retrieval: use focused terms after identifying relevant sources
 
-STEP 3: Domain-Filtered Document Selection
+CRITICAL: selectFields USAGE
+- When LISTING documents (names, links, counts): use selectFields: "document_title,content_path"
+- When READING/ANALYZING content: ALWAYS include "content_text"in selectFields (e.g., "document_title,content_path,locationMetadata/pageNumber,content_text")
+
+STEP 3: For Recommendation/Judgment Questions
+Use targeted query terms that capture both sides of the answer. Include positive AND negative terms in a single search.
+Example: query: "recommend not recommend conclusion risk concern overall"
+This ensures relevance ranking surfaces chunks from both supporting AND contradicting sections.
+DO NOT use selectFields without "content_text" for these - you need the full text to analyze.
+If results only show one perspective, do one follow-up search with opposing terms (e.g., "not recommend risk caution decline").
+Always check if results contain contradicting viewpoints before giving a final answer.
+
+STEP 4: Domain-Filtered Document Selection
 CRITICAL RULES:
-✓ Retrieve context ONLY from documents matching the query domain
-✓ Do NOT mix content across unrelated documents
-✓ Ensure content consistency across sources
-✓ Prioritize depth over breadth: one highly relevant document > multiple loosely related ones
-✓ Use brand_ai, product_category_ai, file_category_ai to validate domain relevance
+- Retrieve context ONLY from documents matching the query domain
+- Do NOT mix content across unrelated documents
+- Do NOT answer from wrong documents just because wording appears similar
+- Prioritize depth over breadth: one highly relevant document > multiple loosely related ones
 
-STEP 4-6: Page-level content extraction
-- Use page_number from results to identify relevant pages
-- Filter by specific page: filter="document_title eq 'doc.pdf' and locationMetadata/pageNumber eq N"
-- Retrieve all content from relevant pages
-- Iterate if answer incomplete (adjust top_k, filters, or retrieve additional pages)
-- Maintain domain relevance
-- Include page numbers in retrieved_docs for precise citations
+RETRIEVAL STRATEGY — Pick the right approach for each query type:
 
-STEP 7: Synthesize Professional Answer
-- Executive Summary (2-3 sentences)
-- Detailed Analysis (2-4 paragraphs) with inline citations INCLUDING PAGE NUMBERS
-- Key Takeaways (3-5 bullets)
+1. LISTING/COUNTING ("List all X", "How many X"):
+   → Use facets in ONE call. Never loop per document.
+   → Include ALL documents from facets in your response — do NOT filter or subset them.
+   → When listing documents with content_path, ALWAYS add "and text_document_id ne ''" to filter. Without this filter, you may get image paths instead of PDF paths. DO NOT return image paths when user is asking for documents.
+    Examples:
+    - Wrong: "file_category_ai eq 'Brand equity'" → Returns image paths ❌
+    - Right: "file_category_ai eq 'Brand equity' and text_document_id ne ''" → Returns PDF paths ✅
+   → STOP IMMEDIATELY after this one call. Do NOT paginate (no skip calls). Do NOT search for individual documents.
+   → Use the "document_list" array directly to build your answer — it already has all unique document names and their URLs.
+   → Include ALL documents from the document_list — do NOT filter or subset them.
 
-CRITICAL: NEVER FILTER DOCUMENTS IN retrieved_docs
- ⚡ FOR LISTING QUERIES: Return ALL documents from search results     
- ❌ DO NOT filter by "report-type" or "formal deliverables"           
- ❌ DO NOT limit to 10-11 items when search returned 36+ documents    
- ✅ DO extract all unique document titles from facet results          
- ✅ DO include ALL documents in retrieved_docs array                  
+2. CONTENT SEARCH ("What does X say about Y", "Find insights on Z"):
+   → Use keyword search with top_k=10-50. No facets needed.
+   → Include content_text in select_fields if you need to read the text.
 
-DOCUMENT REFERENCE FORMATTING
-- Always use 📄 [filename](content_path) (Page N)
-- ALWAYS include page number from locationMetadata/pageNumber
-- Extract cleaned filename by removing UUID prefix
-- Format as markdown links
-- Multiple pages: 📄 [filename](content_path) (Pages 12, 15, 18)
+3. PAGE-SPECIFIC ("What's on page 6 of Report.pdf"):
+   → Use filter with locationMetadata/pageNumber.
 
-Output JSON schema:
+4. SUMMARIZATION ("Summarize document X", "Give me a summary of X"):
+   → First call: top_k=100, select_fields="content_text,document_title,content_path,locationMetadata". Check totalCount.
+   → If totalCount <= 300: paginate to read all chunks (top_k=100, skip=100, skip=200).
+   → If totalCount > 300: sample beginning (already have first 100), middle (skip=totalCount/2, top_k=100), end (skip=totalCount-100, top_k=100). Max 4 calls total.
+
+SYNTHESIS RULES:
+- Executive Summary (2-3 sentences), then Detailed Analysis with inline citations, then Key Takeaways (3-5 bullets).
+- ALWAYS cite with page numbers: 📄 [filename](content_path) (Page N)
+- For listing queries: return ALL documents from search, not a filtered subset.
+- Evidence-based claims only — do not fabricate information.
+
+OUTPUT — Return valid JSON:
 {{
   "retrieved_docs": [
-    {{ "filename": "string", "content_path": "string", "score": float, "pages": "string", "description": "string" }}
+    {{"filename": "string", "content_path": "string", "score": 0.0, "pages": "string", "description": "string"}}
   ],
-  "final_answer": "string",
-  "search_strategy": "string",
-  "reasoning": "string",
-  "total_searches": int
+  "final_answer": "string (markdown with citations)",
+  "search_strategy": "string (brief description of approach taken)",
+  "reasoning": "string (why this strategy was chosen)",
+  "total_searches": 0
 }}
 
-QUALITY STANDARDS
-- CMI-grade professional tone
-- Evidence-based claims only
-- Precise citations WITH PAGE NUMBERS (mandatory)
-- Logical, structured analysis
-- Actionable insights
-- Domain-appropriate terminology
-- Clickable PDF links in correct format
-- Clear separation of summary vs. detailed analysis
-- Transparent about search strategy
-- Include page references for verifiability
-- When using previous context, explicitly state: "Based on our previous discussion..." or "As mentioned earlier..."
-
+CRITICAL:
+- For listing queries, retrieved_docs MUST contain ALL documents found (e.g., if facets return 36 documents, include all 36).
+- Include page numbers in every citation from locationMetadata/pageNumber.
+- Use content_path from search results for links — never reconstruct URLs.
 """
     prompt = ChatPromptTemplate.from_messages(
         [
@@ -592,29 +389,66 @@ QUALITY STANDARDS
         all_new_messages.append(response)
 
         if response.tool_calls:
+            # Log tool call args (clean single-block format)
+            for tc in response.tool_calls:
+                tc_name = tc.name if hasattr(tc, "name") else tc.get("name", "?")
+                tc_args = tc.args if hasattr(tc, "args") else tc.get("args", {})
+                print(f"\n{'─'*60}")
+                print(f"🔧 Tool Call [{iteration}]: {tc_name}")
+                print(f"{'─'*60}")
+                for k, v in (tc_args.items() if isinstance(tc_args, dict) else {}):
+                    print(f"  {k}: {v}")
+                print(f"{'─'*60}")
+
             tool_messages = execute_tool_calls(response.tool_calls, tools_map)
 
-            # � OPTIMIZATION: Parse JSON once, reuse parsed result
-            parsed_results = {}  # Cache parsed JSON to avoid re-parsing
+            # Log search results
+            parsed_results = {}
             for tool_msg in tool_messages:
                 try:
-                    # Only parse once
                     if tool_msg.content not in parsed_results:
                         tool_result = json.loads(tool_msg.content)
                         parsed_results[tool_msg.content] = tool_result
                     else:
                         tool_result = parsed_results[tool_msg.content]
-                    
-                    if isinstance(tool_result, dict) and "documents" in tool_result:
-                        original_docs = tool_result.get("documents", [])
-                        if original_docs:
-                            # Rerank using the user query
-                            reranked = rerank_documents(original_docs, user_query, top_k=len(original_docs))
-                            tool_result["documents"] = reranked
-                            tool_msg.content = json.dumps(tool_result)
-                            print(f"✅ Reranked {len(reranked)} documents using FlashRank")
+
+                    if isinstance(tool_result, dict):
+                        total = tool_result.get("totalCount", "?")
+                        docs = tool_result.get("documents", [])
+                        facets_data = tool_result.get("facets", {})
+                        unique_count = tool_result.get("uniqueDocumentCount", tool_result.get("uniqueDocumentsInBatch", "?"))
+                        has_more = tool_result.get("hasMoreResults", False)
+
+                        print(f"\n{'─'*60}")
+                        print(f"📊 Search Results [{iteration}]")
+                        print(f"{'─'*60}")
+                        print(f"  Total chunks: {total} | Returned: {len(docs) if isinstance(docs, list) else '?'} | Unique docs: {unique_count} | More: {has_more}")
+
+                        # Facets
+                        if facets_data:
+                            for fn, fv in facets_data.items():
+                                if isinstance(fv, list):
+                                    print(f"  Facet [{fn}]: {len(fv)} values")
+
+                        # Top 5 docs
+                        if isinstance(docs, list) and docs:
+                            print(f"  {'─'*56}")
+                            for i, d in enumerate(docs[:5]):
+                                title = d.get("document_title", d.get("source", "?"))
+                                page = d.get("page_number", "?")
+                                score = d.get("score", "?")
+                                content_preview = (d.get("content_text", "") or "")
+                                print(f"  [{i+1}] {title} (p.{page}) score={score}")
+                                if content_preview:
+                                    print(f"      {content_preview}...")
+                            if len(docs) > 5:
+                                print(f"  ... +{len(docs) - 5} more")
+
+                        if has_more:
+                            print(f"  ⚠ More results available: nextSkip={tool_result.get('nextSkip')}, remaining={tool_result.get('remainingChunks')}")
+                        print(f"{'─'*60}")
                 except (json.JSONDecodeError, Exception) as e:
-                    print(f"⚠️ Document reranking skipped: {str(e)}")
+                    print(f"⚠️ Result parsing error: {str(e)}")
 
             # 🔹 Sanitize all tool messages
             for tm in tool_messages:

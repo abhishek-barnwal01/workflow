@@ -22,7 +22,10 @@ def create_llm():
 def safe_utf8(text: str) -> str:
     if not text:
         return ""
-    return text.encode("utf-8", errors="replace").decode("utf-8")
+    # Replace invalid UTF-8 characters with '?'
+    # Also remove null bytes which PostgreSQL cannot handle in JSON
+    cleaned = text.encode("utf-8", errors="replace").decode("utf-8")
+    return cleaned.replace("\x00", "")
 
 def sanitize_any(obj):
     if obj is None:
@@ -138,6 +141,9 @@ Transform the RAW answer above into a POLISHED, PROFESSIONAL response with these
    - Example: - *Soaps Annual Presentation 2022 - Nielsen IQ RMS* (Page 5)
    - Extract cleaned filename by removing UUID prefix
    - Format as markdown links
+   - For LISTING queries (user asked to "list all X", "show all X documents"):
+     Do NOT add a separate "### Sources" section — the document list with links IS the answer.
+     Adding Sources would duplicate the same documents at the bottom. Just present the list cleanly in [filename1](url). If url is not available, just list the filename without link.
 
 5. CLARITY & READABILITY
    - Use short paragraphs (2-4 sentences max)

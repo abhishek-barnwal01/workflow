@@ -76,40 +76,62 @@ def azure_ai_search(
     skip: Optional[int] = None,
     select_fields: Optional[str] = None,
 ) -> str:
-    """
-    Search Azure AI Search indexes using hybrid search (keyword + vector).
+    """Search documents in Azure AI Search. The index stores document CHUNKS, not whole documents.
 
-    Args:
-        query: Search query text. Use "*" for wildcard search when using filters/facets only (main_data only).
-        index_type: "main_data" or "semantic" (two separate indexes)
-        top_k: Number of results (1-100)
-        filter: (MAIN_DATA INDEX ONLY) OData filter expression (CASE-SENSITIVE!). Examples:
-            - "file_category_ai eq 'Usage/Attitude (U&A)'"
-            - "file_category_ai eq 'Brand equity'" (lowercase 'e')
-            - "file_category_ai eq 'Concept testing'" (lowercase 't')
-            - "locationMetadata/pageNumber eq 6"
-            - "document_title eq 'Report.pdf' and locationMetadata/pageNumber eq 6"
-            - Combine with 'and' / 'or'
-            CRITICAL: When listing documents, ALWAYS add "and text_document_id ne ''" to get PDF paths (not image paths)!
-            NOTE: Do NOT use filter with semantic index.
-        facets: (MAIN_DATA INDEX ONLY) List of facetable fields for aggregation/counting.
-            Add ',count:N' to get up to N unique values (default is only 10!).
-            Facetable fields: document_title, text_document_id, content_path, file_category_ai, country_ai
-            Examples: ["document_title,count:1000"], ["file_category_ai,count:100"]
-            NOTE: Do NOT use facets with semantic index - it does not have facetable fields.
-        skip: (MAIN_DATA INDEX ONLY) Number of results to skip for pagination (default: 0)
-        select_fields: (MAIN_DATA INDEX ONLY) Comma-separated list of fields to return.
-            Example: "document_title,content_path" for listing with clickable links
+PARAMETERS:
+- query: Search text, or "*" for wildcard (when using filters/facets only)
+- index_type: "main_data" (supports all params) or "semantic" (only query, index_type, top_k)
+- top_k: Number of results (1-100)
+- filter: OData filter (main_data only, CASE-SENSITIVE). ALWAYS add "and text_document_id ne ''" when listing documents to get PDF paths instead of image paths.
+- facets: Facetable fields for counting/listing (main_data only). Add ",count:1000" to get up to 1000 values.
+  Facetable fields: document_title, text_document_id, content_path, file_category_ai, country_ai
+- skip: Pagination offset (main_data only)
+- select_fields: Comma-separated fields to return (main_data only).
+  VALID fields ONLY: document_title, content_path, content_text, content_id, text_document_id, image_document_id, locationMetadata, file_category_ai, product_category_ai, brand_ai, file_time_period_ai, country_ai
+  MUST include "content_text" when you need to READ document content. Omit it only for listing/counting.
 
-    Returns:
-        JSON with docs (including page_number from locationMetadata), facets (if requested), and metadata.
-        ALWAYS use page_number in citations: 📄 [filename](content_path) (Page N)
+EXACT file_category_ai values (case-sensitive):
+"Analysis", "Annual presentation", "Brand equity", "Brand Health track", "Concept testing", "Home panel", "Link testing", "Media Optimization", "Miscellaneous", "Needscope", "Post Launch Evaluation", "Product acceptance testing", "Product Performance Evaluation", "Retail audit", "Usage/Attitude (U&A)"
 
-    CRITICAL RULES:
-    1. For semantic index: only use query, index_type, and top_k parameters.
-    2. Filters are CASE-SENSITIVE! Use exact category values.
-    3. When listing docs with links: add "text_document_id ne ''" to filter to get PDF paths.
-    4. ALWAYS include page_number in document citations.
+--- FEW-SHOT EXAMPLES ---
+
+Example 1 - Count U&A reports (1 call):
+  query="*", index_type="main_data", top_k=1, filter="file_category_ai eq 'Usage/Attitude (U&A)' and text_document_id ne ''", facets=["document_title,count:1000"]
+  → Number of facet items = number of unique documents
+
+Example 2 - List all U&A reports with clickable links (1 call):
+  query="*", index_type="main_data", top_k=100, filter="file_category_ai eq 'Usage/Attitude (U&A)' and text_document_id ne ''", facets=["document_title,count:1000"], select_fields="document_title,content_path"
+  → Facet values = all unique document names; docs array has content_path for links
+
+Example 3 - List brand equity reports with links (1 call):
+  query="*", index_type="main_data", top_k=100, filter="file_category_ai eq 'Brand equity' and text_document_id ne ''", facets=["document_title,count:1000"], select_fields="document_title,content_path"
+
+Example 4 - Content search (find insights):
+  query="Godrej growth 2022", index_type="main_data", top_k=20
+  → Returns full content with page_number for citations. NO facets needed.
+
+Example 5 - Content search with specific fields:
+  query="product likability", index_type="main_data", top_k=20, select_fields="content_text,document_title,content_path,locationMetadata"
+  → MUST include content_text to read actual text
+
+Example 6 - Specific page of a document:
+  query="*", index_type="main_data", top_k=10, filter="locationMetadata/pageNumber eq 6 and document_title eq 'Presentation.pptx'"
+
+Example 7 - List all categories:
+  query="*", index_type="main_data", top_k=1, facets=["file_category_ai,count:100"]
+
+Example 8 - Summarize a document (read ALL pages with pagination):
+  First call: query="*", index_type="main_data", top_k=100, filter="document_title eq 'Report.pdf'", select_fields="content_text,document_title,content_path,locationMetadata"
+  → Check totalCount. If <= 300: paginate to read all (skip=100, skip=200).
+  → If > 300: sample middle (skip=totalCount/2, top_k=100) and end (skip=totalCount-100, top_k=100). Max 4 calls total.
+
+--- RULES ---
+- USE facets for listing/counting queries (1 call). DO NOT loop per document.
+- DO NOT use facets for content/keyword searches.
+- ALWAYS add "and text_document_id ne ''" to filter when listing documents.
+- WITHOUT ",count:1000" on facets you only get 10 values max.
+- DO NOT invent fields (e.g., metadata_storage_last_modified, author, owner do NOT exist).
+- For semantic index: ONLY use query, index_type, top_k (no filter/facets/skip/select_fields).
     """
 
     index_name = (
@@ -126,18 +148,7 @@ def azure_ai_search(
         skip = None
         select_fields = None
 
-    print(f"\n🔍 TOOL CALL: azure_ai_search (HYBRID)")
-    print(f"   Query: {query}")
-    print(f"   Index: {index_type} ({index_name})")
-    print(f"   Top K: {top_k}")
-    if filter:
-        print(f"   Filter: {filter}")
-    if facets:
-        print(f"   Facets: {facets}")
-    if skip:
-        print(f"   Skip: {skip}")
-    if select_fields:
-        print(f"   Select: {select_fields}")
+    print(f"\n🔍 azure_ai_search | index={index_type} | query={query[:60]}{'...' if len(query)>60 else ''} | top_k={top_k} | filter={filter or 'none'} | facets={facets or 'none'} | skip={skip or 0}")
 
     try:
         client = SearchClient(
@@ -157,8 +168,9 @@ def azure_ai_search(
         # Build search parameters
         search_kwargs = {
             "search_text": query,
-            "top": min(top_k, 50),
+            "top": min(top_k, 100),
             "select": selected,
+            "include_total_count": True,
         }
 
         # Add optional filter
@@ -184,14 +196,12 @@ def azure_ai_search(
                     fields="content_embedding"
                 )
                 search_kwargs["vector_queries"] = [vector_query]
-                print(f"   ✓ Using hybrid search (keyword + vector)")
-            else:
-                print(f"   ⚠️ Using keyword-only search (embedding failed)")
-        else:
-            print(f"   ✓ Using wildcard search (no vector)")
 
         # Perform search
         results = client.search(**search_kwargs)
+
+        # Get total count
+        total_count = getattr(results, 'get_count', lambda: None)()
 
         docs = []
         scores = []
@@ -214,7 +224,7 @@ def azure_ai_search(
                     "text_document_id": result.get("text_document_id", ""),
                     "document_title": title,
                     "image_document_id": result.get("image_document_id", ""),
-                    "content": content[:1000],
+                    "content_text": content,
                     "content_path": source,
                     "page_number": page_number,
                     "bounding_polygon": bounding_polygon,
@@ -230,7 +240,7 @@ def azure_ai_search(
                 full_content = f"{title}\n\n{content}" if title else content
                 doc = {
                     "id": result.get("content_id"),
-                    "content": full_content[:1000],
+                    "content_text": full_content,
                     "score": result.get("@search.score", 0.0),
                     "source": source,
                 }
@@ -240,32 +250,28 @@ def azure_ai_search(
 
         avg_score = sum(scores) / len(scores) if scores else 0.0
 
-        print(f"   ✓ Found {len(docs)} docs (avg score: {avg_score:.2f})")
-        if docs:
-            source_key = "content_path" if index_type == "main_data" else "source"
-            print(f"   📄 Top result: {docs[0].get(source_key, '')} (score: {docs[0]['score']:.2f})")
-            print(f"   📝 Preview: {docs[0]['content'][:100]}...")
-
-        # Show top 3 results for visibility
-        if len(docs) > 1:
-            print(f"\n   📋 Top {min(3, len(docs))} Results:")
-            for i, doc in enumerate(docs[:3]):
-                src = doc.get("content_path", doc.get("source", ""))
-                page_info = f" (Page {doc['page_number']})" if doc.get("page_number") else ""
-                print(f"      {i+1}. {src}{page_info} (score: {doc['score']:.2f})")
-                print(f"         {doc['content'][:80]}...")
-
-        # Build response
+        # Build response (like LibreChat's AzureAISearch.js)
         response_data = {
-            "docs": docs,
-            "metadata": {
-                "returned": len(docs),
-                "avg_score": round(avg_score, 2),
-                "index": index_name,
-                "query": query,
-                "search_type": "hybrid" if (not is_wildcard and search_kwargs.get("vector_queries")) else "keyword",
-            }
+            "documents": docs,
+            "totalCount": total_count,
+            "returnedCount": len(docs),
+            "skip": skip or 0,
+            "hasMoreResults": (total_count is not None and (skip or 0) + len(docs) < total_count),
         }
+
+        # Add pagination helper
+        if response_data["hasMoreResults"]:
+            response_data["nextSkip"] = (skip or 0) + len(docs)
+            response_data["remainingChunks"] = total_count - ((skip or 0) + len(docs))
+
+        # Unique doc tracking
+        unique_titles = set()
+        for d in docs:
+            t = d.get("document_title", d.get("source", ""))
+            if t:
+                unique_titles.add(t)
+        response_data["uniqueDocumentsInBatch"] = len(unique_titles)
+        response_data["documentTitles"] = list(unique_titles)
 
         # Add facet results if facets were requested
         if facets:
@@ -274,41 +280,39 @@ def azure_ai_search(
                 if facet_results:
                     formatted_facets = {}
                     for field_name, facet_values in facet_results.items():
+                        is_doc_facet = field_name in ("document_title", "text_document_id")
                         formatted_facets[field_name] = [
                             {"value": fv["value"], "count": fv["count"]}
                             for fv in facet_values
                         ]
-                    response_data["facets"] = formatted_facets
-                    print(f"   📊 Facets: {', '.join(f'{k}: {len(v)} values' for k, v in formatted_facets.items())}")
+                        if is_doc_facet:
+                            formatted_facets[f"{field_name}_note"] = f"Number of items ({len(facet_values)}) = number of unique documents."
+                            response_data["uniqueDocumentCount"] = len(facet_values)
 
-                    # CRITICAL: Create document_list for easy LLM parsing when faceting by document_title
+                    response_data["facets"] = formatted_facets
+
+                    # Document list with URLs for easy LLM parsing
                     if "document_title" in formatted_facets:
                         document_list = []
                         for facet in formatted_facets["document_title"]:
                             doc_title = facet["value"]
-                            doc_count = facet["count"]
-
-                            # Find first matching doc to get content_path
                             matching_doc = next((d for d in docs if d.get("document_title") == doc_title), None)
                             if matching_doc:
                                 document_list.append({
                                     "title": doc_title,
                                     "url": matching_doc.get("content_path", ""),
-                                    "count": doc_count,
-                                    "score": matching_doc.get("score", 0.0)
+                                    "count": facet["count"],
                                 })
-
                         response_data["document_list"] = document_list
-                        print(f"   📋 Document List: {len(document_list)} unique documents with URLs")
 
             except Exception as facet_err:
                 print(f"   ⚠️ Facet extraction error: {facet_err}")
 
-        # Add filter/pagination info to metadata
-        if filter:
-            response_data["metadata"]["filter"] = filter
-        if skip:
-            response_data["metadata"]["skip"] = skip
+        # Add summary note
+        if response_data.get("uniqueDocumentCount"):
+            response_data["summary"] = f"Found {response_data['uniqueDocumentCount']} unique documents (out of {total_count} total chunks)."
+        elif total_count:
+            response_data["important_note"] = "totalCount represents CHUNKS, not documents. Use facets to count unique documents."
 
         return json.dumps(response_data)
 
