@@ -6,6 +6,7 @@ from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, Tool
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tools import azure_ai_search
 from models import AmbiguityInfo, IntentClassification, SemanticOutput, PipelineState
+import asyncio
 import config
 import json
 from memory_store import store  # <-- your PostgresStore
@@ -49,61 +50,104 @@ def create_llm():
     )
 
 
-def execute_tool_calls(tool_calls: list, tools_map: dict) -> list:
-    """
-    Execute tool calls and return ToolMessages.
+async def _invoke_single_tool_async(tool_call, tools_map: dict) -> ToolMessage:
+    """Execute a single tool call asynchronously and return a ToolMessage."""
+    if hasattr(tool_call, "name"):
+        tool_name = tool_call.name
+        tool_args = tool_call.args
+        tool_id = tool_call.id
+    else:
+        tool_name = tool_call["name"]
+        tool_args = tool_call["args"]
+        tool_id = tool_call["id"]
 
-    Handles both dict-like and ToolCall object formats.
-    Properly handles stringified tool arguments.
-    """
-    tool_messages = []
-    for tool_call in tool_calls:
-        # Handle both dict and ToolCall object formats
-        if hasattr(tool_call, "name"):
-            # ToolCall object (LangChain format)
-            tool_name = tool_call.name
-            tool_args = tool_call.args
-            tool_id = tool_call.id
-        else:
-            # Dict format (fallback)
-            tool_name = tool_call["name"]
-            tool_args = tool_call["args"]
-            tool_id = tool_call["id"]
-
-        # Handle stringified args (some providers return JSON strings)
-        if isinstance(tool_args, str):
-            try:
-                tool_args = json.loads(tool_args)
-            except json.JSONDecodeError:
-                tool_messages.append(
-                    ToolMessage(
-                        content=json.dumps(
-                            {"error": f"Invalid JSON in tool args: {tool_args}"}
-                        ),
-                        tool_call_id=tool_id,
-                    )
-                )
-                continue
-
-        if tool_name in tools_map:
-            try:
-                result = tools_map[tool_name].invoke(tool_args)
-                tool_messages.append(ToolMessage(content=result, tool_call_id=tool_id))
-            except Exception as e:
-                tool_messages.append(
-                    ToolMessage(
-                        content=json.dumps({"error": str(e)}), tool_call_id=tool_id
-                    )
-                )
-        else:
-            tool_messages.append(
-                ToolMessage(
-                    content=json.dumps({"error": f"Unknown tool: {tool_name}"}),
-                    tool_call_id=tool_id,
-                )
+    if isinstance(tool_args, str):
+        try:
+            tool_args = json.loads(tool_args)
+        except json.JSONDecodeError:
+            return ToolMessage(
+                content=json.dumps({"error": f"Invalid JSON in tool args: {tool_args}"}),
+                tool_call_id=tool_id,
             )
 
-    return tool_messages
+    if tool_name in tools_map:
+        try:
+            result = await asyncio.to_thread(tools_map[tool_name].invoke, tool_args)
+            return ToolMessage(content=result, tool_call_id=tool_id)
+        except Exception as e:
+            return ToolMessage(
+                content=json.dumps({"error": str(e)}), tool_call_id=tool_id
+            )
+    else:
+        return ToolMessage(
+            content=json.dumps({"error": f"Unknown tool: {tool_name}"}),
+            tool_call_id=tool_id,
+        )
+
+
+def _invoke_single_tool_sync(tool_call, tools_map: dict) -> ToolMessage:
+    """Synchronous fallback for single tool call execution."""
+    if hasattr(tool_call, "name"):
+        tool_name = tool_call.name
+        tool_args = tool_call.args
+        tool_id = tool_call.id
+    else:
+        tool_name = tool_call["name"]
+        tool_args = tool_call["args"]
+        tool_id = tool_call["id"]
+
+    if isinstance(tool_args, str):
+        try:
+            tool_args = json.loads(tool_args)
+        except json.JSONDecodeError:
+            return ToolMessage(
+                content=json.dumps({"error": f"Invalid JSON in tool args: {tool_args}"}),
+                tool_call_id=tool_id,
+            )
+
+    if tool_name in tools_map:
+        try:
+            result = tools_map[tool_name].invoke(tool_args)
+            return ToolMessage(content=result, tool_call_id=tool_id)
+        except Exception as e:
+            return ToolMessage(
+                content=json.dumps({"error": str(e)}), tool_call_id=tool_id
+            )
+    else:
+        return ToolMessage(
+            content=json.dumps({"error": f"Unknown tool: {tool_name}"}),
+            tool_call_id=tool_id,
+        )
+
+
+def _is_event_loop_running() -> bool:
+    """Check if an asyncio event loop is already running."""
+    try:
+        loop = asyncio.get_running_loop()
+        return loop.is_running()
+    except RuntimeError:
+        return False
+
+
+def execute_tool_calls(tool_calls: list, tools_map: dict) -> list:
+    """Execute tool calls in parallel using asyncio.gather when multiple calls exist."""
+    if len(tool_calls) <= 1:
+        return [_invoke_single_tool_sync(tc, tools_map) for tc in tool_calls]
+
+    print(f"  ⚡ Executing {len(tool_calls)} tool calls in parallel (asyncio.gather)")
+
+    async def _gather_all():
+        return await asyncio.gather(
+            *[_invoke_single_tool_async(tc, tools_map) for tc in tool_calls]
+        )
+
+    if _is_event_loop_running():
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            results = pool.submit(asyncio.run, _gather_all()).result()
+        return list(results)
+    else:
+        return list(asyncio.run(_gather_all()))
 
 
 def semantic_node(state: PipelineState) -> Dict[str, Any]:
