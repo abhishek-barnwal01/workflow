@@ -67,6 +67,28 @@ def formatter_node(state: PipelineState) -> Dict[str, Any]:
         print("⚠️ RAG Output is None!")
     print("-"*70)
 
+    # ✅ PRIORITY 1: Clarification question - return as-is (no formatting needed)
+    if state.clarification_message and state.awaiting_clarification:
+        print("📝 Returning clarification question")
+        return {
+            "messages": sanitize_any(state.messages),
+            "formatted": sanitize_any({
+                "formatted_response": safe_utf8(state.clarification_message),
+                "metadata": {"source": "clarification", "confidence": 1.0}
+            })
+        }
+
+    # ✅ PRIORITY 2: Direct answer from semantic OR normal RAG - both get LLM formatting
+    if state.clarification_message and not state.awaiting_clarification:
+        print("📝 Formatting direct answer from semantic node")
+        rag_final_answer = state.clarification_message  
+        confidence = 1.0
+    else:
+        rag_final_answer = state.rag_output.final_answer if state.rag_output else ""
+        confidence = state.evaluation.confidence_score if state.evaluation else 0.8
+
+    # PRIORITY 3: Normal RAG formatting 
+
     print(f"\n📝 RAG's answer to format ({len(rag_final_answer)} chars)")
     print(f"🔹 Confidence: {confidence:.2f}")
 

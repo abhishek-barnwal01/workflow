@@ -11,6 +11,7 @@ import asyncio
 import config
 import json
 from memory_store import store
+from langgraph.types import RunnableConfig
 
 
 # ----- Add this helper at the top of rag_node.py -----
@@ -177,7 +178,7 @@ def _invoke_single_tool_sync(tool_call, tools_map: dict) -> ToolMessage:
             tool_call_id=tool_id,
         )
 
-def rag_node(state: PipelineState) -> Dict[str, Any]:
+def rag_node(state: PipelineState, config: RunnableConfig = None) -> Dict[str, Any]:
     """
     Full RAG node with multi-phase document retrieval, page-level extraction, synthesis,
     citations, and quality standards. Uses full enterprise-grade prompt.
@@ -193,8 +194,10 @@ def rag_node(state: PipelineState) -> Dict[str, Any]:
     enriched_query = state.enriched_query or ""
     messages = state.messages
 
+    thread_id = config.get("configurable", {}).get("thread_id", "default")
+
     user_memories = store.search(
-        ("rag_memory", state.user_id),
+        ("rag_memory", state.user_id, thread_id),
         query=None,   # no semantic filtering, just fetch recent
         limit=5
     )
@@ -218,6 +221,25 @@ def rag_node(state: PipelineState) -> Dict[str, Any]:
 
     # Focused RAG prompt - tool description handles "how to use the tool"
     prompt_text = """You are a RAG retrieval and analysis agent. Use the azure_ai_search tool to find documents, then synthesize professional answers with citations.
+
+---
+PREVIOUSLY RETRIEVED DOCUMENTS:
+---
+{memories_text}
+
+---
+PHASE 0: CHECK HISTORY FIRST (MANDATORY)
+---
+BEFORE searching, check if answer already exists:
+
+SKIP SEARCH IF: query identical to last few messages | answer in recent history | follow-up on same docs/topic
+DO SEARCH IF: different topic/entity | no relevant history | user asks for "updated" info
+
+IF SKIPPING:
+  → Start: "Based on our previous discussion..." or "As I just mentioned..."
+  → retrieved_docs: [] | total_searches: 0 | reasoning: "Used previous [reason]"
+
+---
 
 STEP 1: Assess Query Scope
 - Determine if the query requires single or multiple documents
@@ -461,7 +483,7 @@ CRITICAL:
     if output.retrieved_docs:
         for i, d in enumerate(output.retrieved_docs):
             store.put(
-                namespace=("rag_memory", state.user_id),  # tuple namespace
+                namespace=("rag_memory", state.user_id, thread_id),  # tuple namespace
                 key=f"doc_{i}_{hash(d.description) % 100000}",  # unique key per doc
                 value={
                     "type": "retrieved_doc",

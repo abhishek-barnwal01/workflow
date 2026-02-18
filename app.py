@@ -303,11 +303,13 @@ def generate_stream(user_query, langchain_messages, user_id, session_id, model):
 
         # Handle clarification if needed
         clarification_msg = result.get("clarification_message")
-        if clarification_msg:
-            print(f"✅ Clarification detected, returning: {clarification_msg[:100]}...")
+        awaiting = result.get("awaiting_clarification", False)
+
+        if clarification_msg and awaiting:
+            print(f"✅ Clarification question, returning: {clarification_msg[:100]}...")
             final_response = clarification_msg
         else:
-            print(f"📄 No clarification, using formatted response")
+            print(f"📄 Using formatted response")
             final_response = result.get("formatted", {}).get("formatted_response", "")
             final_response = append_sas_to_blob_urls(final_response)
             if not final_response:

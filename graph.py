@@ -53,6 +53,10 @@ def semantic_router(state: PipelineState):
     # Check if semantic_chitchat flag is set (chitchat response already generated)
     if hasattr(state, 'semantic_chitchat') and state.semantic_chitchat:
         return END
+    
+    if state.clarification_message and (not state.ambiguity_detected or not state.ambiguity_detected.ambiguous):
+        return "formatter"
+
     return "clarification"
 
 
@@ -84,7 +88,7 @@ def build_graph():
         semantic_router,
         {
             "clarification": "clarification",
-            END: END,
+            "formatter": "formatter",
         },
     )
 

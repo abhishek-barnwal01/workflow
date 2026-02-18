@@ -10,6 +10,7 @@ import asyncio
 import config
 import json
 from memory_store import store  # <-- your PostgresStore
+from langgraph.types import RunnableConfig
 
 
 
@@ -150,7 +151,7 @@ def execute_tool_calls(tool_calls: list, tools_map: dict) -> list:
         return list(asyncio.run(_gather_all()))
 
 
-def semantic_node(state: PipelineState) -> Dict[str, Any]:
+def semantic_node(state: PipelineState, config: RunnableConfig = None) -> Dict[str, Any]:
     """
     Two-step semantic enrichment node.
 
@@ -181,10 +182,11 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         print(f"Previous Entity: {previous_ambiguity.entity}")
         print(f"Previous Options: {[opt.label for opt in previous_ambiguity.options[:5]]}")
     
+    thread_id = config.get("configurable", {}).get("thread_id", "default")
     # Step 1: Load user memories from PostgresStore
     try:
         user_memories = store.search(
-            ("rag_memory", user_id),
+            ("rag_memory", user_id, thread_id),  # tuple namespace
             query=None,
             limit=10
         )
@@ -478,6 +480,7 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         ])
         
         enrichment_messages = enrichment_prompt.format_messages(
+            memories_text=memories_text,
             messages=chat_history,
             user_query=user_query
         )
@@ -490,7 +493,7 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
             # Handle content filter or other API errors
             error_msg = str(e)
             print(f"⚠️ LLM Error: {error_msg[:200]}")
-            if "content_filter" in error_msg.lower() or "jailbreak" in error_msg.lower():
+            if "content_filter" in error_msg.lower() or "jailbreak" in error_msg.lower() or "filtered" in error_msg.lower() or "400" in error_msg:
                 print("   Content filter triggered - using fallback enrichment")
                 # Fallback: just use the original query
                 output = SemanticOutput(
@@ -542,6 +545,31 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         # Agentic enrichment with chat history but NO TOOLS
         enrichment_prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a query enrichment agent for specific, targeted questions.
+             
+    ---
+    USER MEMORIES (Previously Retrieved Documents):
+    ---
+    {memories_text}
+
+    ---
+    PHASE 0: CHECK HISTORY FIRST
+    ---
+
+    BEFORE enriching for RAG, check if you can answer directly:
+
+    1. Recent Chat History (messages below): Was this EXACT or VERY SIMILAR question asked recently ? Is the answer already in a recent AI response?
+    2. Previously Retrieved Documents (above): Do these already contain the answer? Is this a follow-up on the same topic/entity?
+
+    IF answer EXISTS in history or previous docs:
+    → Set enriched_query = "" (empty string)
+    → Put FULL ANSWER in reasoning field
+    → Start with: "Based on our previous discussion..." or "As I mentioned..."
+
+    ELSE (needs new retrieval):
+    → Set enriched_query = "brief, clear version for RAG search"
+    → Keep reasoning brief
+
+    ---         
 
     The user asked a SPECIFIC question with clear entities mentioned.
     
@@ -554,7 +582,7 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
     
     Return JSON with:
     {{
-    "enriched_query": "brief, clear version of the query with context applied",
+    "enriched_query": "empty string '' if answering directly, otherwise brief query for RAG",
     "domain_context": {{"query_type": "specific"}},
     "ambiguity_detected": {{
         "ambiguous": false,
@@ -562,7 +590,8 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
         "options": [],
         "reason": null
     }},
-    "reasoning": "one-line explanation of enrichment"
+    "reasoning": "If answering directly: FULL ANSWER starting with 'Based on our previous discussion...'
+                If routing to RAG: one-line explanation of enrichment"
     }}
 
     CRITICAL:
@@ -571,12 +600,14 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
     - Example: User says "concept testing" after "list all U&A reports" → enriched_query = "list all concept testing reports"
     - Example: NOT "Retrieve and list all documents that specifically reference 'Concept testing'..."
     - ambiguous MUST be false
-    - options MUST be empty array []"""),
+    - options MUST be empty array []
+    - If enriched_query is EMPTY "" → You answered directly, don't route to RAG"""),
             MessagesPlaceholder("messages"),  # Chat history auto-injected
-            ("human", "Query: {user_query}\n\nEnrich this specific query briefly, using chat history for context.")
+            ("human", "Query: {user_query}\n\nCheck history first. If answer exists, set enriched_query='' and put full answer in reasoning otherwise enrich this specific query briefly, using chat history for context.")
         ])
 
         enrichment_messages = enrichment_prompt.format_messages(
+            memories_text=memories_text,
             messages=chat_history,
             user_query=user_query
         )
@@ -601,6 +632,29 @@ def semantic_node(state: PipelineState) -> Dict[str, Any]:
             else:
                 # Re-raise other errors
                 raise
+        
+        # ✅ PHASE 0: Check if answered directly from history
+        if not output.enriched_query or output.enriched_query.strip() == "":
+            print("✅ ANSWERED DIRECTLY FROM HISTORY - SKIPPING RAG NODE")
+            print(f"   Direct answer: {output.reasoning[:200]}...")
+
+            answer_message = AIMessage(
+                content=safe_utf8(output.reasoning),
+                metadata={"type": "direct_answer", "node": "semantic", "source": "history"}
+            )
+            all_new_messages.append(answer_message)
+
+            return {
+                "messages": sanitize_any(all_new_messages),
+                "user_memories": sanitize_any(user_memories),
+                "clarification_message": safe_utf8(output.reasoning),  # ✅ Signals END
+                "semantic_chitchat": False,
+                "awaiting_clarification": False,
+                "previous_ambiguity": None,
+                "enriched_query": "",
+                "domain_context": sanitize_any(output.domain_context),
+                "ambiguity_detected": sanitize_any(output.ambiguity_detected.model_dump()),
+            }
 
         print(f"✅ Enriched Query: {output.enriched_query}")
         print(f"   Reasoning: {output.reasoning}")
