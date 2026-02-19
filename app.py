@@ -1,74 +1,103 @@
-"""Flask API with LangGraph + Postgres persistence"""
+"""FastAPI server with LangGraph + Postgres persistence.
 
-from flask import Flask, request, jsonify
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-from graph import build_graph
-import uuid
-import time
+Async endpoints allow concurrent request handling — multiple users
+can hit the server simultaneously without blocking each other.
+Graph nodes remain synchronous and are offloaded to a thread pool
+via asyncio.to_thread so the event loop stays free.
+"""
+
+import asyncio
 import json
 import os
-from flask import Flask, request, jsonify, Response, stream_with_context
+import re
+import time
+import uuid
+from contextlib import asynccontextmanager
 
-app = Flask(__name__)
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from langchain_core.messages import HumanMessage, AIMessage
 
-# ---------- Build LangGraph Flow ----------
-graph = build_graph()  # this must return COMPILED graph
+from graph import build_graph
+
+
+# ---------- Build LangGraph Flow (sync, runs once at startup) ----------
+graph = build_graph()
+
+
+# ---------- Lifespan ----------
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("\n🚀 Starting LangGraph RAG Server (FastAPI + async)...")
+    print("💡 POST → http://localhost:5001/chat")
+    print('   {"question": "your question", "session_id": "user123"}')
+    print("\n💡 POST → http://localhost:5001/v1/chat/completions (LibreChat)")
+    print("   OpenAI-compatible endpoint\n")
+    yield
+    print("Shutting down...")
+
+
+app = FastAPI(title="LangGraph RAG Server", lifespan=lifespan)
+
+
+# ---------- Helpers ----------
+def append_sas_to_blob_urls(markdown_text: str) -> str:
+    """Finds all Azure Blob Storage URLs in markdown and appends SAS token."""
+    sas_token = os.getenv("AZURE_BLOB_SAS_TOKEN", "")
+
+    if not sas_token:
+        print("⚠️ WARNING: AZURE_BLOB_SAS_TOKEN not set")
+        return markdown_text
+
+    blob_pattern = re.compile(
+        r"(https://[a-zA-Z0-9]+\.blob\.core\.windows\.net/[^\s\)]+?)(?=[\s\)\]]|$)"
+    )
+
+    def add_sas(match):
+        url = match.group(1)
+        if "sv=" in url or "sig=" in url:
+            return url
+        separator = "&" if "?" in url else "?"
+        return f"{url}{separator}{sas_token}"
+
+    return blob_pattern.sub(add_sas, markdown_text)
 
 
 # ---------- Chat Endpoint ----------
-@app.route("/chat", methods=["POST"])
-
-# chat completion 
-# username, 
-def chat():
+@app.post("/chat")
+async def chat(request: Request):
     """
-    Body:
-    {
-        "question": "What is market share?",
-        "session_id": "user123"
-    }
+    Simple chat endpoint.
+    Body: {"question": "What is market share?", "session_id": "user123"}
     """
-    data = request.json or {}
+    data = await request.json()
     user_query = data.get("question")
     thread_id = data.get("session_id", "default")
 
     if not user_query:
-        return jsonify({"error": "Question required"}), 400
+        return JSONResponse({"error": "Question required"}, status_code=400)
 
     try:
-        # Only pass new input - let checkpoint restore the rest
-        result = graph.invoke(
+        result = await asyncio.to_thread(
+            graph.invoke,
             {"user_query": user_query, "user_id": "abhishek"},
             config={"configurable": {"thread_id": thread_id}},
         )
 
         clarification_msg = result.get("clarification_message")
         if clarification_msg:
-            # Return clarification to user without running RAG
-            return jsonify({
+            return {
                 "response": clarification_msg,
                 "needs_clarification": True,
-                "session_id": thread_id
-            })
+                "session_id": thread_id,
+            }
 
-        # return jsonify(
-        #     {
-        #         # "response": result["rag_output"]["final_answer"],
-        #         "response": result["formatted"]["formatted_response"],
-        #         "rag_output": result["rag_output"],
-        #         "evaluation": result.get("evaluation"),
-        #         "session_id": thread_id,
-        #     }
-        # )
-
-        # Prepare pieces safely
         formatter_result = result.get("formatted", {})
         eval_result = result.get("evaluation", {})
         rag_result = result.get("rag_output", {})
-        semantic_result = result  # contains enriched_query etc.
-        iteration = result.get("iteration", 0)  # optional, if you track iterations
+        iteration = result.get("iteration", 0)
 
-        return jsonify({
+        return {
             "response": formatter_result.get("formatted_response", ""),
             "metadata": {
                 "confidence": eval_result.get("confidence_score", 0.0),
@@ -79,58 +108,55 @@ def chat():
                 },
                 "sources": len(rag_result.get("retrieved_docs", [])),
                 "iterations": iteration + 1,
-                "enriched_query": semantic_result.get("enriched_query", ""),
+                "enriched_query": result.get("enriched_query", ""),
                 "evaluator_reasoning": eval_result.get("reasoning", ""),
             },
             "session_id": thread_id,
-        })
-
+        }
 
     except Exception as e:
         import traceback
-
         traceback.print_exc()
-        return jsonify({"error": str(e), "session_id": thread_id}), 500
+        return JSONResponse({"error": str(e), "session_id": thread_id}, status_code=500)
+
 
 # ---------- History Endpoint ----------
-@app.route("/history/<thread_id>", methods=["GET"])
-def get_history(thread_id):
+@app.get("/history/{thread_id}")
+async def get_history(thread_id: str):
     from persistence import checkpointer
 
     config = {"configurable": {"thread_id": thread_id}}
-    checkpoint = checkpointer.get(config)
+    checkpoint = await asyncio.to_thread(checkpointer.get, config)
 
     if not checkpoint:
-        return jsonify({"session_id": thread_id, "messages": []})
+        return {"session_id": thread_id, "messages": []}
 
-    # ✅ Messages are stored in channel_values["messages"]
     channel_values = checkpoint.get("channel_values", {})
     messages = channel_values.get("messages", [])
 
     serialized_messages = []
     for msg in messages:
-        # msg can be a dict or LangChain message object
         if hasattr(msg, "type") and hasattr(msg, "content"):
             serialized_messages.append({"role": msg.type, "content": msg.content})
         elif isinstance(msg, dict):
             serialized_messages.append({
                 "role": msg.get("type", "unknown"),
-                "content": msg.get("content", "")
+                "content": msg.get("content", ""),
             })
         else:
             serialized_messages.append({"role": "unknown", "content": str(msg)})
 
-    return jsonify({"session_id": thread_id, "messages": serialized_messages})
+    return {"session_id": thread_id, "messages": serialized_messages}
 
 
 # ---------- OpenAI-Compatible Endpoint ----------
-@app.route("/v1/chat/completions", methods=["POST"])
-def chat_completions():
+@app.post("/v1/chat/completions")
+async def chat_completions(request: Request):
     """
-    LibreChat/OpenAI-compatible endpoint.
-    Converts OpenAI format to LangGraph pipeline format.
+    LibreChat / OpenAI-compatible endpoint.
+    Converts OpenAI message format to LangGraph pipeline format.
     """
-    data = request.json or {}
+    data = await request.json()
     print(data)
     messages = data.get("messages", [])
     stream = data.get("stream", False)
@@ -139,34 +165,31 @@ def chat_completions():
     # Extract user/session info from headers (LibreChat sends these)
     user_id = request.headers.get("X-User-Id", "anonymous")
     session_id = request.headers.get("X-Conversation-Id", str(uuid.uuid4()))
-    print(request)
 
     if not messages:
-        return jsonify({
-            "error": {"message": "No messages provided", "type": "invalid_request_error"}
-        }), 400
+        return JSONResponse(
+            {"error": {"message": "No messages provided", "type": "invalid_request_error"}},
+            status_code=400,
+        )
 
     # Extract user_query from last user message (skip system messages)
     user_query = None
     for msg in reversed(messages):
-        role = msg.get("role", "").lower()
-        if role == "user":
+        if msg.get("role", "").lower() == "user":
             user_query = msg.get("content", "")
             break
-    
-    if not user_query:
-        return jsonify({
-            "error": {"message": "No user message found", "type": "invalid_request_error"}
-        }), 400
 
-    # Convert OpenAI format (role: user/assistant/system) to LangChain format
-    # Filter out system messages as they are handled by the LLM prompts
+    if not user_query:
+        return JSONResponse(
+            {"error": {"message": "No user message found", "type": "invalid_request_error"}},
+            status_code=400,
+        )
+
+    # Convert OpenAI format to LangChain format (exclude last user message)
     langchain_messages = []
-    for msg in messages[:-1]:  # Exclude last user message (it's now user_query)
+    for msg in messages[:-1]:
         role = msg.get("role", "").lower()
         content = msg.get("content", "")
-        
-        # Skip system messages - they shouldn't be part of chat history
         if role == "system":
             continue
         elif role == "user":
@@ -174,43 +197,33 @@ def chat_completions():
         elif role == "assistant":
             langchain_messages.append(AIMessage(content=content))
 
-    # For clarification, don't stream - return immediately
-    # Check if this will result in clarification by doing a quick graph check
-    # Actually, we should just handle streaming but check for clarification in generate_stream
-    
-    # For clarification, don't stream - return immediately
-    # Check if this will result in clarification by doing a quick graph check
-    # Actually, we should just handle streaming but check for clarification in generate_stream
-    
-    # Streaming version
+    # Streaming
     if stream:
-        return Response(
-            stream_with_context(generate_stream(user_query, langchain_messages, user_id, session_id, model)),
-            mimetype='text/event-stream',
+        return StreamingResponse(
+            generate_stream(user_query, langchain_messages, user_id, session_id, model),
+            media_type="text/event-stream",
             headers={
-                'Cache-Control': 'no-cache',
-                'X-Accel-Buffering': 'no',
-                'Connection': 'keep-alive'
-            }
-        )
-
-    # Non-streaming version
-    try:
-        result = graph.invoke(
-            {
-                "user_query": user_query,
-                "messages": langchain_messages,
-                "user_id": user_id
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+                "Connection": "keep-alive",
             },
-            config={"configurable": {"thread_id": session_id}}
         )
 
-        # Handle clarification if needed
+    # Non-streaming
+    try:
+        result = await asyncio.to_thread(
+            graph.invoke,
+            {"user_query": user_query, "messages": langchain_messages, "user_id": user_id},
+            config={"configurable": {"thread_id": session_id}},
+        )
+
         clarification_msg = result.get("clarification_message")
         if clarification_msg:
             final_response = clarification_msg
         else:
-            final_response = result.get("formatted", {}).get("formatted_response", "I couldn't generate a response.")
+            final_response = result.get("formatted", {}).get(
+                "formatted_response", "I couldn't generate a response."
+            )
 
         response = {
             "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
@@ -221,95 +234,57 @@ def chat_completions():
                 {
                     "index": 0,
                     "message": {"role": "assistant", "content": final_response},
-                    "finish_reason": "stop"
+                    "finish_reason": "stop",
                 }
             ],
             "usage": {
                 "prompt_tokens": sum(len(m.get("content", "").split()) for m in messages),
                 "completion_tokens": len(final_response.split()),
-                "total_tokens": sum(len(m.get("content", "").split()) for m in messages) + len(final_response.split())
-            }
+                "total_tokens": sum(len(m.get("content", "").split()) for m in messages)
+                + len(final_response.split()),
+            },
         }
 
-        # Return with explicit charset to handle markdown rendering
-        resp = jsonify(response)
-        resp.headers['Content-Type'] = 'application/json; charset=utf-8'
-        return resp
+        return JSONResponse(
+            response,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+        )
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return jsonify({
-            "error": {
-                "message": str(e),
-                "type": "internal_error",
-                "code": "internal_error"
-            }
-        }), 500
+        return JSONResponse(
+            {"error": {"message": str(e), "type": "internal_error", "code": "internal_error"}},
+            status_code=500,
+        )
 
-import re
-
-def append_sas_to_blob_urls(markdown_text: str) -> str:
-    """
-    Finds all Azure Blob Storage URLs in markdown and appends SAS token.
-    """
-    sas_token = os.getenv('AZURE_BLOB_SAS_TOKEN', '')
-    
-    if not sas_token:
-        print("⚠️ WARNING: AZURE_BLOB_SAS_TOKEN not set")
-        return markdown_text
-    
-    # Pattern to match blob URLs
-    blob_pattern = re.compile(
-        r'(https://[a-zA-Z0-9]+\.blob\.core\.windows\.net/[^\s\)]+?)(?=[\s\)\]]|$)'
-    )
-    
-    def add_sas(match):
-        url = match.group(1)
-        
-        # Skip if SAS already present
-        if 'sv=' in url or 'sig=' in url:
-            return url
-        
-        # Append SAS token
-        separator = '&' if '?' in url else '?'
-        return f"{url}{separator}{sas_token}"
-    
-    return blob_pattern.sub(add_sas, markdown_text)
 
 # ---------- Streaming generator for LibreChat ----------
-def generate_stream(user_query, langchain_messages, user_id, session_id, model):
+async def generate_stream(user_query, langchain_messages, user_id, session_id, model):
     """
-    Streams the response with proper OpenAI SSE format for LibreChat markdown rendering.
-    
+    Async generator that streams the response as OpenAI SSE chunks.
+
     KEY FIXES:
     1. Send role: "assistant" in first chunk (critical for markdown rendering)
     2. Stream entire response at once (preserves markdown formatting)
     """
     try:
-        result = graph.invoke(
-            {
-                "user_query": user_query,
-                "messages": langchain_messages,
-                "user_id": user_id
-            },
-            config={"configurable": {"thread_id": session_id}}
+        result = await asyncio.to_thread(
+            graph.invoke,
+            {"user_query": user_query, "messages": langchain_messages, "user_id": user_id},
+            config={"configurable": {"thread_id": session_id}},
         )
 
-        # Debug: print what we got back
         print(f"\n🔍 DEBUG generate_stream result keys: {list(result.keys())}")
         print(f"📌 clarification_message: {result.get('clarification_message')}")
         print(f"📌 semantic_chitchat: {result.get('semantic_chitchat')}")
 
-        # Handle clarification if needed
         clarification_msg = result.get("clarification_message")
-        awaiting = result.get("awaiting_clarification", False)
-
-        if clarification_msg and awaiting:
-            print(f"✅ Clarification question, returning: {clarification_msg[:100]}...")
+        if clarification_msg:
+            print(f"✅ Clarification detected, returning: {clarification_msg[:100]}...")
             final_response = clarification_msg
         else:
-            print(f"📄 Using formatted response")
+            print("📄 No clarification, using formatted response")
             final_response = result.get("formatted", {}).get("formatted_response", "")
             final_response = append_sas_to_blob_urls(final_response)
             if not final_response:
@@ -318,50 +293,37 @@ def generate_stream(user_query, langchain_messages, user_id, session_id, model):
         chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created_time = int(time.time())
 
-        # ==================== FIX 1: Send role first ====================
-        # CRITICAL: LibreChat needs this to know it's an assistant message
-        # Without this, it treats the message as plain text instead of markdown
+        # CRITICAL: Send role first — LibreChat needs this for markdown rendering
         role_chunk = {
             "id": chunk_id,
             "object": "chat.completion.chunk",
             "created": created_time,
             "model": model,
             "choices": [
-                {
-                    "index": 0,
-                    "delta": {"role": "assistant"},
-                    "finish_reason": None
-                }
-            ]
+                {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
+            ],
         }
         yield f"data: {json.dumps(role_chunk)}\n\n"
 
-        # ==================== FIX 2: Stream entire response at once ====================
-        # Streaming word-by-word breaks markdown syntax:
-        # "**Bold text**" split into ["**Bold", "text**"] renders incorrectly
-        # Solution: Send the complete markdown in one chunk
+        # Send complete markdown in one chunk to preserve formatting
         content_chunk = {
             "id": chunk_id,
             "object": "chat.completion.chunk",
             "created": created_time,
             "model": model,
             "choices": [
-                {
-                    "index": 0,
-                    "delta": {"content": final_response},
-                    "finish_reason": None
-                }
-            ]
+                {"index": 0, "delta": {"content": final_response}, "finish_reason": None}
+            ],
         }
         yield f"data: {json.dumps(content_chunk)}\n\n"
 
-        # Final chunk to indicate completion
+        # Final stop chunk
         final_chunk = {
             "id": chunk_id,
             "object": "chat.completion.chunk",
             "created": created_time,
             "model": model,
-            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
         }
         yield f"data: {json.dumps(final_chunk)}\n\n"
         yield "data: [DONE]\n\n"
@@ -369,47 +331,40 @@ def generate_stream(user_query, langchain_messages, user_id, session_id, model):
     except Exception as e:
         import traceback
         traceback.print_exc()
-        
+
         chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
-        
-        # Send role first even in error case
+        created_time = int(time.time())
+
         role_chunk = {
             "id": chunk_id,
             "object": "chat.completion.chunk",
-            "created": int(time.time()),
+            "created": created_time,
             "model": model,
             "choices": [
-                {
-                    "index": 0,
-                    "delta": {"role": "assistant"},
-                    "finish_reason": None
-                }
-            ]
+                {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
+            ],
         }
         yield f"data: {json.dumps(role_chunk)}\n\n"
-        
-        # Then send error message
+
         error_chunk = {
             "id": chunk_id,
             "object": "chat.completion.chunk",
-            "created": int(time.time()),
+            "created": created_time,
             "model": model,
             "choices": [
                 {
                     "index": 0,
                     "delta": {"content": f"\n\n❌ Error: {str(e)}"},
-                    "finish_reason": "stop"
+                    "finish_reason": "stop",
                 }
-            ]
+            ],
         }
         yield f"data: {json.dumps(error_chunk)}\n\n"
         yield "data: [DONE]\n\n"
 
-# ---------- Run Flask ----------
+
+# ---------- Run Server ----------
 if __name__ == "__main__":
-    print("\n🚀 Starting LangGraph RAG Server...")
-    print("💡 POST → http://localhost:5001/chat")
-    print('   {"question": "your question", "session_id": "user123"}')
-    print("\n💡 POST → http://localhost:5001/v1/chat/completions (LibreChat)")
-    print('   OpenAI-compatible endpoint\n')
-    app.run(debug=False, port=5001, host='0.0.0.0')
+    import uvicorn
+
+    uvicorn.run(app, host="0.0.0.0", port=5001)
