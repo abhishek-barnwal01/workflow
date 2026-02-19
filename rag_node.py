@@ -5,6 +5,7 @@ from typing import Dict, Any, List
 from langchain_openai import AzureChatOpenAI
 from langchain_core.messages import ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.tools import tool
 from tools import azure_ai_search
 from models import RAGOutput, PipelineState
 import asyncio
@@ -18,7 +19,37 @@ from langgraph.types import RunnableConfig
 _SCHEMAS_PATH = pathlib.Path(__file__).parent / "schemas.json"
 with open(_SCHEMAS_PATH) as _f:
     _SUMMARIZATION_SCHEMAS: dict = json.load(_f)
-_SCHEMAS_TEXT = json.dumps(_SUMMARIZATION_SCHEMAS, indent=2)
+
+
+@tool
+def get_summarization_schema(file_category_ai: str) -> str:
+    """
+    Returns the canonical extraction schema for a document type.
+
+    Call this when the user asks to summarize a document, AFTER identifying
+    the document's file_category_ai. The returned JSON contains:
+      - slots: all fields to extract from the document
+      - section_hints: document section names to target during retrieval
+
+    Args:
+        file_category_ai: The document category from Azure Search,
+                          e.g. "Link Test", "U&A", "Concept Test", "Dipstick"
+    """
+    schema = _SUMMARIZATION_SCHEMAS.get(file_category_ai)
+    if not schema:
+        # Try case-insensitive match
+        for key, val in _SUMMARIZATION_SCHEMAS.items():
+            if key.lower() == file_category_ai.lower().strip():
+                schema = val
+                break
+
+    if schema:
+        return json.dumps(schema, indent=2)
+
+    return json.dumps({
+        "error": f"No schema found for '{file_category_ai}'",
+        "available_categories": list(_SUMMARIZATION_SCHEMAS.keys()),
+    })
 
 
 # ----- Add this helper at the top of rag_node.py -----
@@ -222,8 +253,11 @@ def rag_node(state: PipelineState, config: RunnableConfig = None) -> Dict[str, A
         docs_text = "No prior retrieved documents."
 
     llm = create_llm()
-    tools = [azure_ai_search]
-    tools_map = {"azure_ai_search": azure_ai_search}
+    tools = [azure_ai_search, get_summarization_schema]
+    tools_map = {
+        "azure_ai_search": azure_ai_search,
+        "get_summarization_schema": get_summarization_schema,
+    }
     llm_with_tools = llm.bind_tools(tools)
 
     # Focused RAG prompt - tool description handles "how to use the tool"
@@ -328,8 +362,7 @@ CRITICAL:
 - Use content_path from search results for links — never reconstruct URLs.
 """
 
-    # ── Summarization schemas (appended at runtime so no f-string escaping needed) ──
-    prompt_text += f"""
+    prompt_text += """
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DOCUMENT SUMMARIZATION
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -337,35 +370,27 @@ DOCUMENT SUMMARIZATION
 If the user asks to SUMMARIZE a document (keywords: summarize, summary, executive summary,
 brief me, overview of, highlights of, what does the report say), follow this workflow:
 
-STEP 1 — Identify the document's file_category_ai:
-- First check PREVIOUSLY RETRIEVED DOCUMENTS above — does any entry match the document?
-  If yes, note its file_category_ai.
-- Then check the chat history — was a document name or category mentioned recently?
-- If still unknown: make ONE tool call with selectFields="document_title,file_category_ai,content_path"
-  and a keyword query matching the document name/brand to look up its file_category_ai.
+STEP 1 — Identify file_category_ai:
+  - Check PREVIOUSLY RETRIEVED DOCUMENTS above and chat history for the document name/category.
+  - If unknown: call azure_ai_search with selectFields="document_title,file_category_ai,content_path"
+    and a query matching the document name/brand.
 
-STEP 2 — Look up the matching schema from SUMMARIZATION SCHEMAS below.
-  Use the file_category_ai value as the key (e.g. "Link Test", "U&A", "Dipstick", "Concept Test").
-  The schema tells you which slots to fill and which document sections to target.
+STEP 2 — Call get_summarization_schema(file_category_ai) to get the extraction schema.
+  The schema returns slots (fields to fill) and section_hints (sections to target).
 
 STEP 3 — Retrieve all document chunks:
   - Filter: file_category_ai eq '<value>' and text_document_id ne ''
-  - Also filter by document name / brand if identified.
-  - Paginate: top_k=100, skip=0; if totalCount > 100 continue with skip=100, skip=200 (max 4 calls).
+  - Also filter by document name/brand if identified.
+  - Paginate: top_k=100, skip=0; continue with skip=100, skip=200 if needed (max 4 calls).
   - selectFields: "content_text,document_title,content_path,locationMetadata"
-  - Use the schema's section_hints to focus on the right sections.
+  - Use section_hints from the schema to focus retrieval.
 
-STEP 4 — Fill every slot in the schema from the retrieved text.
-  Set null for any field not found in the document. Do not fabricate.
+STEP 4 — Fill every slot from retrieved text. Set null for missing fields. Do not fabricate.
 
-STEP 5 — Return the filled schema as final_answer.
-  Wrap it in a ```json ... ``` code block. Do NOT write a narrative —
-  the formatter will render the fixed template from the JSON.
+STEP 5 — Return the filled schema as final_answer wrapped in ```json ... ```.
+  Do NOT write a narrative — the formatter renders the fixed template from the JSON.
   Status values: "pass" (≥70th percentile), "watch" (50th–69th), "fail" (<50th).
   go_no_go values: "go", "iterate", "no_go".
-
-SUMMARIZATION SCHEMAS (keyed by file_category_ai):
-{_SCHEMAS_TEXT}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """
 
