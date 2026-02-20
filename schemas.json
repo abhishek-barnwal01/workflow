@@ -1,0 +1,225 @@
+{
+  "Link Test": {
+    "display_name": "Link Test Report",
+    "render": { "format": "business_report", "header_fields": ["research.market_city", "research.audience"] },
+    "section_hints": [
+      "background", "objectives", "research design", "sample achievement",
+      "intended working", "action standards", "topline findings",
+      "spontaneous communication", "aided communication",
+      "message delivery", "way forward", "recommendation"
+    ],
+    "slots": {
+      "brand": {
+        "parent_brand": null,
+        "variant_brand": null
+      },
+      "stimulus": {
+        "ad_name": null,
+        "edit_length_sec": null,
+        "edit_type": null
+      },
+      "research": {
+        "method": null,
+        "market_city": null,
+        "region": null,
+        "base_n": null,
+        "audience": null,
+        "fieldwork_period": null
+      },
+      "strategy": {
+        "key_message": null,
+        "rtb": [],
+        "business_objective": null
+      },
+      "benchmarks": {
+        "awareness_index_threshold": "70th percentile",
+        "persuasion_threshold": "70th percentile"
+      },
+      "kpi_summary": {
+        "awareness_index":  { "percentile": null, "status": null },
+        "persuasion":       { "percentile": null, "status": null },
+        "branding_parent":  { "percentile": null, "status": null },
+        "branding_variant": { "percentile": null, "status": null },
+        "enjoyment":        { "percentile": null, "status": null },
+        "understanding":    { "percentile": null, "status": null }
+      },
+      "message_delivery": {
+        "spontaneous_top_messages": [],
+        "key_message_landed_spontaneously": null,
+        "aided_strength": null,
+        "gap_summary": null
+      },
+      "issues": {
+        "what_worked": [],
+        "what_didnt": []
+      },
+      "recommendation": {
+        "go_no_go": null,
+        "agency_summary": null,
+        "way_forward": []
+      },
+      "additional_notes": [],
+      "citations": {
+        "doc": "",
+        "pages": []
+      }
+    }
+  },
+
+  "U&A": {
+    "display_name": "Usage & Attitude Report",
+    "render": { "format": "business_report", "header_fields": ["research.market", "research.audience"] },
+    "section_hints": [
+      "background", "objectives", "sample", "brand funnel",
+      "spontaneous awareness", "aided awareness", "ever used", "current users",
+      "usage frequency", "purchase drivers", "barriers", "attitudes",
+      "brand image", "competitive landscape", "switching", "recommendation"
+    ],
+    "slots": {
+      "brand": {
+        "parent_brand": null,
+        "category": null
+      },
+      "research": {
+        "method": null,
+        "market": null,
+        "base_n": null,
+        "audience": null,
+        "period": null
+      },
+      "brand_funnel": {
+        "spontaneous_awareness_pct": null,
+        "total_aided_awareness_pct": null,
+        "ever_used_pct": null,
+        "current_users_pct": null,
+        "loyalty_pct": null
+      },
+      "usage": {
+        "purchase_frequency": null,
+        "purchase_drivers": [],
+        "usage_occasions": []
+      },
+      "attitudes": {
+        "top_brand_image_attributes": [],
+        "top_barriers": [],
+        "key_perception_gaps": []
+      },
+      "competitive": {
+        "top_competitors": [],
+        "switching_from": [],
+        "switching_to": []
+      },
+      "segments": {
+        "heavy_users_profile": null,
+        "light_users_profile": null,
+        "non_users_profile": null
+      },
+      "recommendation": {
+        "opportunity": null,
+        "risk": null,
+        "action_areas": []
+      },
+      "additional_notes": [],
+      "citations": {
+        "doc": "",
+        "pages": []
+      }
+    }
+  },
+
+  "Concept Test": {
+    "display_name": "Concept Test Report",
+    "render": { "format": "business_report", "header_fields": ["research.market", "research.audience"] },
+    "section_hints": [
+      "background", "objectives", "sample", "concept description",
+      "overall appeal", "purchase intent", "uniqueness", "believability",
+      "likes", "dislikes", "way forward", "recommendation"
+    ],
+    "slots": {
+      "brand": {
+        "parent_brand": null,
+        "concept_name": null
+      },
+      "research": {
+        "method": null,
+        "market": null,
+        "base_n": null,
+        "audience": null
+      },
+      "concept": {
+        "description": null,
+        "key_claim": null,
+        "rtb": []
+      },
+      "kpi_summary": {
+        "overall_appeal":  { "score": null, "status": null },
+        "purchase_intent": { "score": null, "status": null },
+        "uniqueness":      { "score": null, "status": null },
+        "believability":   { "score": null, "status": null }
+      },
+      "diagnostics": {
+        "what_liked": [],
+        "what_disliked": [],
+        "message_clarity": null
+      },
+      "recommendation": {
+        "go_no_go": null,
+        "refinement_areas": [],
+        "way_forward": []
+      },
+      "additional_notes": [],
+      "citations": {
+        "doc": "",
+        "pages": []
+      }
+    }
+  },
+
+  "Dipstick": {
+    "display_name": "Brand Health / Dipstick Report",
+    "render": { "format": "business_report", "header_fields": ["research.market", "research.audience"] },
+    "section_hints": [
+      "brand funnel", "awareness", "consideration", "preference",
+      "purchase intent", "brand equity", "brand image",
+      "wave comparison", "trend", "recommendation", "key shifts"
+    ],
+    "slots": {
+      "brand": {
+        "parent_brand": null,
+        "variant_brand": null
+      },
+      "research": {
+        "wave": null,
+        "period": null,
+        "market": null,
+        "base_n": null
+      },
+      "brand_health": {
+        "spontaneous_awareness_pct": null,
+        "aided_awareness_pct": null,
+        "consideration_pct": null,
+        "purchase_intent_pct": null,
+        "preference_pct": null
+      },
+      "brand_equity": {
+        "overall_score": null,
+        "vs_previous_wave": null,
+        "vs_competition": null
+      },
+      "key_shifts": {
+        "improved": [],
+        "declined": [],
+        "stable": []
+      },
+      "recommendation": {
+        "priority_areas": [],
+        "watch_out": []
+      },
+      "additional_notes": [],
+      "citations": {
+        "doc": "",
+        "pages": []
+      }
+    }
+  }
+}

@@ -89,6 +89,7 @@ def build_graph():
         {
             "clarification": "clarification",
             "formatter": "formatter",
+            END: END,
         },
     )
 

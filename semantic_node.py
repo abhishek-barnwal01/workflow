@@ -1,154 +1,14 @@
 """Semantic Node - Query enrichment and ambiguity detection"""
 
 from typing import Dict, Any, List
-from langchain_openai import AzureChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from tools import azure_ai_search
 from models import AmbiguityInfo, IntentClassification, SemanticOutput, PipelineState
-import asyncio
-import config
 import json
-from memory_store import store  # <-- your PostgresStore
+from memory_store import store
 from langgraph.types import RunnableConfig
-
-
-
-
-# ----- Add this helper -----
-def safe_utf8(text: str) -> str:
-    if not text:
-        return ""
-    # Replace invalid UTF-8 characters with '?'
-    # Also remove null bytes which PostgreSQL cannot handle in JSON
-    cleaned = text.encode("utf-8", errors="replace").decode("utf-8")
-    return cleaned.replace("\x00", "")
-
-
-# ----------------------------
-
-
-def sanitize_any(obj):
-    if obj is None:
-        return None
-    if isinstance(obj, str):
-        return safe_utf8(obj)
-    if isinstance(obj, list):
-        return [sanitize_any(i) for i in obj]
-    if isinstance(obj, dict):
-        return {k: sanitize_any(v) for k, v in obj.items()}
-    return obj
-
-
-def create_llm():
-    """Create LLM instance"""
-    return AzureChatOpenAI(
-        azure_deployment=config.AZURE_OPENAI_DEPLOYMENT,  # Updated param name
-        azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
-        api_key=config.AZURE_OPENAI_KEY,
-        api_version=config.AZURE_OPENAI_API_VERSION,
-        temperature=1,
-    )
-
-
-async def _invoke_single_tool_async(tool_call, tools_map: dict) -> ToolMessage:
-    """Execute a single tool call asynchronously and return a ToolMessage."""
-    if hasattr(tool_call, "name"):
-        tool_name = tool_call.name
-        tool_args = tool_call.args
-        tool_id = tool_call.id
-    else:
-        tool_name = tool_call["name"]
-        tool_args = tool_call["args"]
-        tool_id = tool_call["id"]
-
-    if isinstance(tool_args, str):
-        try:
-            tool_args = json.loads(tool_args)
-        except json.JSONDecodeError:
-            return ToolMessage(
-                content=json.dumps({"error": f"Invalid JSON in tool args: {tool_args}"}),
-                tool_call_id=tool_id,
-            )
-
-    if tool_name in tools_map:
-        try:
-            result = await asyncio.to_thread(tools_map[tool_name].invoke, tool_args)
-            return ToolMessage(content=result, tool_call_id=tool_id)
-        except Exception as e:
-            return ToolMessage(
-                content=json.dumps({"error": str(e)}), tool_call_id=tool_id
-            )
-    else:
-        return ToolMessage(
-            content=json.dumps({"error": f"Unknown tool: {tool_name}"}),
-            tool_call_id=tool_id,
-        )
-
-
-def _invoke_single_tool_sync(tool_call, tools_map: dict) -> ToolMessage:
-    """Synchronous fallback for single tool call execution."""
-    if hasattr(tool_call, "name"):
-        tool_name = tool_call.name
-        tool_args = tool_call.args
-        tool_id = tool_call.id
-    else:
-        tool_name = tool_call["name"]
-        tool_args = tool_call["args"]
-        tool_id = tool_call["id"]
-
-    if isinstance(tool_args, str):
-        try:
-            tool_args = json.loads(tool_args)
-        except json.JSONDecodeError:
-            return ToolMessage(
-                content=json.dumps({"error": f"Invalid JSON in tool args: {tool_args}"}),
-                tool_call_id=tool_id,
-            )
-
-    if tool_name in tools_map:
-        try:
-            result = tools_map[tool_name].invoke(tool_args)
-            return ToolMessage(content=result, tool_call_id=tool_id)
-        except Exception as e:
-            return ToolMessage(
-                content=json.dumps({"error": str(e)}), tool_call_id=tool_id
-            )
-    else:
-        return ToolMessage(
-            content=json.dumps({"error": f"Unknown tool: {tool_name}"}),
-            tool_call_id=tool_id,
-        )
-
-
-def _is_event_loop_running() -> bool:
-    """Check if an asyncio event loop is already running."""
-    try:
-        loop = asyncio.get_running_loop()
-        return loop.is_running()
-    except RuntimeError:
-        return False
-
-
-def execute_tool_calls(tool_calls: list, tools_map: dict) -> list:
-    """Execute tool calls in parallel using asyncio.gather when multiple calls exist."""
-    if len(tool_calls) <= 1:
-        return [_invoke_single_tool_sync(tc, tools_map) for tc in tool_calls]
-
-    print(f"  ⚡ Executing {len(tool_calls)} tool calls in parallel (asyncio.gather)")
-
-    async def _gather_all():
-        return await asyncio.gather(
-            *[_invoke_single_tool_async(tc, tools_map) for tc in tool_calls]
-        )
-
-    if _is_event_loop_running():
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            results = pool.submit(asyncio.run, _gather_all()).result()
-        return list(results)
-    else:
-        return list(asyncio.run(_gather_all()))
+from utils import safe_utf8, sanitize_any, create_llm, execute_tool_calls
 
 
 def semantic_node(state: PipelineState, config: RunnableConfig = None) -> Dict[str, Any]:
@@ -183,13 +43,15 @@ def semantic_node(state: PipelineState, config: RunnableConfig = None) -> Dict[s
         print(f"Previous Options: {[opt.label for opt in previous_ambiguity.options[:5]]}")
     
     thread_id = config.get("configurable", {}).get("thread_id", "default")
-    # Step 1: Load user memories from PostgresStore
+    # Step 1: Load user memories from PostgresStore (once — rag_node reuses via state)
     try:
-        user_memories = store.search(
-            ("rag_memory", user_id, thread_id),  # tuple namespace
+        _raw_items = store.search(
+            ("rag_memory", user_id, thread_id),
             query=None,
-            limit=10
+            limit=10,
         )
+        # Convert store Item objects to plain dicts so they serialise cleanly in PipelineState
+        user_memories = [item.value for item in _raw_items] if _raw_items else []
         print(f"📚 Loaded {len(user_memories)} user memories")
     except Exception as e:
         print(f"⚠️ Could not load memories: {e}")
@@ -200,17 +62,18 @@ def semantic_node(state: PipelineState, config: RunnableConfig = None) -> Dict[s
     if chat_history:
         print(f"📜 Chat History: {len(messages)} messages available")
 
-    # Format user memories for prompt
-    memories_text = ""
+    # Format previously retrieved documents for prompt
+    # (written by rag_node into PostgresStore after each retrieval)
     if user_memories:
-        memories_text = "Known facts about this user:\n"
-        for mem in user_memories:
-            mem_dict = mem.value
-            mem_type = mem_dict.get("type", "unknown")
-            mem_content = mem_dict.get("content", "")
-            memories_text += f"- [{mem_type}] {mem_content}\n"
+        memories_text = "Previously retrieved documents:\n"
+        for mem_dict in user_memories:
+            filename = mem_dict.get("filename", "")
+            content_path = mem_dict.get("content_path", "")
+            description = mem_dict.get("description", "")[:300]
+            pages = mem_dict.get("pages", "")
+            memories_text += f"- {filename} ({content_path}) [Pages: {pages}] {description}\n"
     else:
-        memories_text = "No prior user memories stored."
+        memories_text = "No previously retrieved documents."
 
     # ========================================================================
     # CLARIFICATION RESPONSE MODE: Skip intent classification
@@ -454,33 +317,21 @@ def semantic_node(state: PipelineState, config: RunnableConfig = None) -> Dict[s
         
         # Agentic enrichment with chat history
         enrichment_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a query enrichment agent.
+            ("system", """You are a query enrichment agent for general knowledge questions.
 
-    The user asked a general knowledge question that doesn't require searching company documents.
+Produce a self-contained, standalone version of the user's query.
 
-    Your job:
-    1. Rephrase the query to be clear and specific
-    2. Add any helpful context from chat history if available
-    3. Do NOT search for domain entities
+RULES:
+1. Resolve references — substitute pronouns ("it", "that", "the same") using prior context.
+2. Carry forward topic — if the user narrows or pivots on a prior topic, preserve the base topic.
+3. Keep enriched_query concise; add only what is needed to remove ambiguity.
 
-    Return JSON with:
-    {{
-    "enriched_query": "clear, specific version of the query",
-    "domain_context": null,
-    "ambiguity_detected": {{
-        "ambiguous": false,
-        "entity": null,
-        "options": [],
-        "reason": null
-    }},
-    "reasoning": "brief explanation of enrichment"
-    }}"""),
+Return JSON: enriched_query, domain_context (null), ambiguity_detected (ambiguous: false), reasoning."""),
             MessagesPlaceholder("messages"),  # Chat history auto-injected
             ("human", "Query: {user_query}\n\nEnrich this query without searching documents.")
         ])
-        
+
         enrichment_messages = enrichment_prompt.format_messages(
-            memories_text=memories_text,
             messages=chat_history,
             user_query=user_query
         )
@@ -544,66 +395,51 @@ def semantic_node(state: PipelineState, config: RunnableConfig = None) -> Dict[s
 
         # Agentic enrichment with chat history but NO TOOLS
         enrichment_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a query enrichment agent for specific, targeted questions.
-             
-    ---
-    USER MEMORIES (Previously Retrieved Documents):
-    ---
-    {memories_text}
+            ("system", """You are a query enrichment agent for a document retrieval system.
 
-    ---
-    PHASE 0: CHECK HISTORY FIRST
-    ---
+USER MEMORIES (previously retrieved documents):
+{memories_text}
 
-    BEFORE enriching for RAG, check if you can answer directly:
+─── ENRICHMENT RULES ────
+Produce a concise, standalone enriched_query for RAG search:
 
-    1. Recent Chat History (messages below): Was this EXACT or VERY SIMILAR question asked recently ? Is the answer already in a recent AI response?
-    2. Previously Retrieved Documents (above): Do these already contain the answer? Is this a follow-up on the same topic/entity?
+1. Resolve elliptical references
+   Replace shorthand with the full entity inferred from the most recent relevant turn.
+   e.g. "summarize jan 2021" after a GN1 link-test discussion
+     → "summarize No1 TVC Refresh Creative Brief Jan 2021 GN1 link test India"
 
-    IF answer EXISTS in history or previous docs:
-    → Set enriched_query = "" (empty string)
-    → Put FULL ANSWER in reasoning field
-    → Start with: "Based on our previous discussion..." or "As I mentioned..."
+2. Carry forward unrestated context
+   Inherit brand, product, report type, category, geography, and time period from
+   prior turns when the user omits them. Override only what the user explicitly changes.
+   e.g. user asked about U&A reports, then says "concept testing"
+     → "list all concept testing reports India"
 
-    ELSE (needs new retrieval):
-    → Set enriched_query = "brief, clear version for RAG search"
-    → Keep reasoning brief
+3. Apply defaults (only when absent from both the query and history)
+   - No time period → prepend "latest"
+   - No geography  → append "India"
 
-    ---         
+─── DIRECT ANSWER SHORTCUT ────
+Set enriched_query = "" only when the COMPLETE answer already exists verbatim in a
+prior AI response — not when prior turns merely list document titles or links.
+Place the full answer in reasoning, starting with "Based on our previous discussion…"
 
-    The user asked a SPECIFIC question with clear entities mentioned.
-    
-    Your job:
-    1. Use chat history to infer context (e.g., if user previously asked "list all U&A reports" and now says "concept testing", infer they mean "list all concept testing reports")
-    2. Rephrase the query briefly and clearly for RAG search
-    3. Preserve all entity names exactly as mentioned
-    4. Keep enrichment MINIMAL - do not enumerate document types, synonyms, or variants
-    5. Set ambiguous = false (this is a specific query)
-    
-    Return JSON with:
-    {{
-    "enriched_query": "empty string '' if answering directly, otherwise brief query for RAG",
-    "domain_context": {{"query_type": "specific"}},
-    "ambiguity_detected": {{
-        "ambiguous": false,
-        "entity": null,
-        "options": [],
-        "reason": null
-    }},
-    "reasoning": "If answering directly: FULL ANSWER starting with 'Based on our previous discussion...'
-                If routing to RAG: one-line explanation of enrichment"
-    }}
+─── SUMMARIZATION EXCEPTION ────
+When the user wants to read, summarize, or get insights from a specific document:
+- Always set task_type = "summarization" and provide a non-empty enriched_query.
+- Infer document_category from the document name or context.
+- Never use the direct-answer shortcut; document content is not stored in history.
 
-    CRITICAL:
-    - Keep enriched_query SHORT and DIRECT
-    - Do NOT add verbose descriptions, document type enumerations, or synonyms
-    - Example: User says "concept testing" after "list all U&A reports" → enriched_query = "list all concept testing reports"
-    - Example: NOT "Retrieve and list all documents that specifically reference 'Concept testing'..."
-    - ambiguous MUST be false
-    - options MUST be empty array []
-    - If enriched_query is EMPTY "" → You answered directly, don't route to RAG"""),
+─── OUTPUT ────
+{{
+  "enriched_query": "standalone RAG query, or '' if answering directly",
+  "domain_context": {{"query_type": "specific"}},
+  "ambiguity_detected": {{"ambiguous": false, "entity": null, "options": [], "reason": null}},
+  "reasoning": "direct answer text, or one-line enrichment rationale",
+  "task_type": "summarization | listing | content_search | other",
+  "document_category": "Link Test | U&A | Concept Test | Dipstick | null"
+}}"""),
             MessagesPlaceholder("messages"),  # Chat history auto-injected
-            ("human", "Query: {user_query}\n\nCheck history first. If answer exists, set enriched_query='' and put full answer in reasoning otherwise enrich this specific query briefly, using chat history for context.")
+            ("human", "Query: {user_query}\n\nCheck history first. If answer exists, set enriched_query='' and put full answer in reasoning otherwise enrich this specific query briefly, using chat history for context." )
         ])
 
         enrichment_messages = enrichment_prompt.format_messages(
@@ -633,6 +469,12 @@ def semantic_node(state: PipelineState, config: RunnableConfig = None) -> Dict[s
                 # Re-raise other errors
                 raise
         
+        # ✅ Python guard: summarization tasks must always go to RAG — no history shortcut.
+        # This is a typed signal check (output.task_type), not keyword scanning.
+        if output.task_type == "summarization" and (not output.enriched_query or output.enriched_query.strip() == ""):
+            print("⚠️  GUARD: summarization task had empty enriched_query — forcing RAG routing")
+            output.enriched_query = user_query
+
         # ✅ PHASE 0: Check if answered directly from history
         if not output.enriched_query or output.enriched_query.strip() == "":
             print("✅ ANSWERED DIRECTLY FROM HISTORY - SKIPPING RAG NODE")
@@ -654,10 +496,13 @@ def semantic_node(state: PipelineState, config: RunnableConfig = None) -> Dict[s
                 "enriched_query": "",
                 "domain_context": sanitize_any(output.domain_context),
                 "ambiguity_detected": sanitize_any(output.ambiguity_detected.model_dump()),
+                "task_type": output.task_type,
+                "document_category": output.document_category,
             }
 
         print(f"✅ Enriched Query: {output.enriched_query}")
         print(f"   Reasoning: {output.reasoning}")
+        print(f"   Task Type: {output.task_type} | Document Category: {output.document_category}")
         print("➡️  Passing to RAG node for document search")
 
         # Store reasoning
@@ -680,6 +525,8 @@ def semantic_node(state: PipelineState, config: RunnableConfig = None) -> Dict[s
             "ambiguity_detected": sanitize_any(
                 output.ambiguity_detected.model_dump()
             ),
+            "task_type": output.task_type,
+            "document_category": output.document_category,
         }
 
     # ========================================================================
@@ -732,104 +579,33 @@ Example:
         prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a semantic enrichment agent for HIGH-LEVEL, EXPLORATORY queries.
 {clarification_context}
+Previously retrieved documents (from memory):
+{memories_text}
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-YOUR MISSION: Use the azure_ai_search tool to DISCOVER entities and detect ambiguities
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 1 — CHECK HISTORY
+Skip the tool ONLY if the previous AI message already answered this exact question or ambugity is resolved by history context.
+For all other cases — including new chats and follow-up questions — proceed to STEP 2.
 
-You are handling a BROAD/EXPLORATORY query that needs entity discovery.
+STEP 2 — SEARCH (mandatory for any new or exploratory question)
+Call azure_ai_search on the semantic index to DISCOVER entities and detect ambiguities.
 The user wants to:
 - Discover what options are available (e.g., "what products do we have")
 - Get an overview (e.g., "compare all regions")
 - Resolve ambiguity (e.g., "market share of soap" - which soap brand?)
+- If no geography in query or history → include "India" in search text
+- If no time period in query or history → include "latest" in search text
 
-USE THE TOOL to search the SEMANTIC index for entity values and business context.
+STEP 3 — DECIDE
+- One clear match, or user said "all" → enriched_query = short keyword query for RAG, ambiguous = false
+- Multiple matches, nothing in history resolves them → ambiguous = true, populate all options
+- Search failed or no results → best-effort enriched_query from query alone, ambiguous = false
 
-You autonomously decide:
-- What to search for (entities, categories, metrics)
-- How many results to retrieve (top_k: 10-100)
-- If you need multiple searches to fully understand the domain
-
-----
-CONVERSATION HISTORY (Chat history - automatically injected below)
-----
-
-You have access to the full conversation history below. Use it to:
-- Resolve ambiguities from previous context
-- Understand follow-up questions
-- Avoid asking for clarification if context is already clear
-- Reference previous responses and tool calls
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-WORKFLOW STEPS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-STEP 1: SEARCH FOR ENTITIES
-Call the tool to discover available entities:
-    azure_ai_search(query="relevant search terms", index_type="semantic", top_k=?)
-
-
-STEP 2: CHECK CHAT HISTORY FIRST (CRITICAL)
-BEFORE marking anything as ambiguous:
-1. READ the chat history carefully (available below current message)
-2. If previous conversation provides context → USE IT, NOT ambiguous
-3. If user says "ALL" or "all of them" → Include all options, NOT ambiguous
-4. Only mark ambiguous if: multiple values exist AND no context in history
-
-STEP 3: EXTRACT OPTIONS FROM SEARCH RESULTS
-READ the content returned by the tool and extract specific entity values.
-
-If multiple values exist AND no context resolves them:
-✓ ambiguity_detected.ambiguous = true
-✓ ambiguity_detected.entity = "the entity name (e.g., 'brand', 'product')"
-✓ ambiguity_detected.options MUST be populated with all discovered options
-✓ ambiguity_detected.reason = "explain why clarification is needed"
-
-Each option MUST be structured as:
-{{
-  "label": "Display Name (e.g., 'Lux')",
-  "value": "lowercase_underscore_value (e.g., 'lux')"
-}}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-OUTPUT REQUIREMENTS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-You MUST return ONLY valid JSON in this exact structure:
-
-{{
-  "enriched_query": "enriched version of the query with discovered entities",
-  "domain_context": {{"discovered_entities": ["list of discovered entities"]}},
-  "ambiguity_detected": {{
-    "ambiguous": false or true,
-    "entity": "string or null",
-    "options": [],
-    "reason": "string or null"
-  }},
-  "reasoning": "explain your search strategy and findings"
-}}
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-CRITICAL RULES
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-✓ If ambiguous = true → options MUST NOT be empty
-✓ If options is empty → ambiguous MUST be false
-✓ If ambiguous = false → options MUST be an empty array []
-✓ If ambiguity is resolved by history → ambiguous = false
-✓ If search fails → ambiguous = false and explain in reasoning
-✓ ALWAYS use the tool at least once - this is a discovery/exploratory query
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+OUTPUT:
+- enriched_query: short keyword query, not a sentence or description
+- ambiguity_detected.options: populated only when ambiguous = true; empty array [] otherwise
 """),
             MessagesPlaceholder("messages"),
-            ("human", """Query: {user_query}
-
-Task: Use the azure_ai_search tool to discover entities and enrich this BROAD query.
-
-IMPORTANT:
-1. This is a HIGH-LEVEL query - use the tool to discover entities
-2. Check chat history ABOVE before marking ambiguous
-3. Use user memories to provide context
-4. Populate ambiguity_detected.options if multiple entities found"""),
+            ("human", "Query: {user_query}"),
         ])
         
         # Format initial messages with history
@@ -878,18 +654,12 @@ IMPORTANT:
                 print("✅ Final response received")
                 break
         
-        raw_output = response.content if response else ""
-
-        print("\n📄 SEMANTIC AGENT RAW OUTPUT:")
-        print("=" * 70)
-        print(raw_output[:500] + "..." if len(raw_output) > 500 else raw_output)
-        print("=" * 70)
-
-        # Parse with structured output
+        # Extract structured output from the full agent_messages context (includes tool results),
+        # NOT from raw_output alone — that would lose all search result context.
         llm_structured = create_llm().with_structured_output(
             SemanticOutput, method="function_calling"
         )
-        output: SemanticOutput = llm_structured.invoke(raw_output)
+        output: SemanticOutput = llm_structured.invoke(agent_messages)
 
         # Store reasoning
         if output.reasoning:
@@ -907,6 +677,10 @@ IMPORTANT:
         print(f"   Ambiguous: {output.ambiguity_detected.ambiguous}")
 
         if output.ambiguity_detected.ambiguous:
+            # Cap at 10 options — clarification_node further limits to 5 for display.
+            # Without a cap the LLM can return hundreds, bloating state and breaking the UI.
+            if len(output.ambiguity_detected.options) > 10:
+                output.ambiguity_detected.options = output.ambiguity_detected.options[:10]
             print(f"   Entity: {output.ambiguity_detected.entity}")
             print(f"   Options: {len(output.ambiguity_detected.options)}")
             for opt in output.ambiguity_detected.options[:5]:

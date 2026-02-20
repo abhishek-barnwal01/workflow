@@ -19,6 +19,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.messages import HumanMessage, AIMessage
 
 from graph import build_graph
+from formatter_node import build_formatter_prompt
+from utils import create_llm
 
 
 # ---------- Build LangGraph Flow (sync, runs once at startup) ----------
@@ -83,14 +85,6 @@ async def chat(request: Request):
             {"user_query": user_query, "user_id": "abhishek"},
             config={"configurable": {"thread_id": thread_id}},
         )
-
-        clarification_msg = result.get("clarification_message")
-        if clarification_msg:
-            return {
-                "response": clarification_msg,
-                "needs_clarification": True,
-                "session_id": thread_id,
-            }
 
         formatter_result = result.get("formatted", {})
         eval_result = result.get("evaluation", {})
@@ -217,13 +211,9 @@ async def chat_completions(request: Request):
             config={"configurable": {"thread_id": session_id}},
         )
 
-        clarification_msg = result.get("clarification_message")
-        if clarification_msg:
-            final_response = clarification_msg
-        else:
-            final_response = result.get("formatted", {}).get(
-                "formatted_response", "I couldn't generate a response."
-            )
+        formatted_response = result.get("formatted", {}).get("formatted_response", "")
+        clarification_msg = result.get("clarification_message", "")
+        final_response = formatted_response or clarification_msg or "I couldn't generate a response."
 
         response = {
             "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
@@ -259,19 +249,33 @@ async def chat_completions(request: Request):
         )
 
 
+# ---------- SSE chunk helpers ----------
+def _sse_chunk(chunk_id: str, created_time: int, model: str, *, delta: dict, finish_reason=None) -> str:
+    return f"data: {json.dumps({'id': chunk_id, 'object': 'chat.completion.chunk', 'created': created_time, 'model': model, 'choices': [{'index': 0, 'delta': delta, 'finish_reason': finish_reason}]})}\n\n"
+
+
 # ---------- Streaming generator for LibreChat ----------
 async def generate_stream(user_query, langchain_messages, user_id, session_id, model):
     """
-    Async generator that streams the response as OpenAI SSE chunks.
+    Two-phase streaming:
+      Phase 1 — Run the graph with skip_formatter=True (RAG + semantic nodes,
+                 no formatter LLM call). Graph finishes fast; formatter is skipped.
+      Phase 2 — Stream the formatter LLM token-by-token via llm.astream().
+                 Tokens are piped directly to SSE so the client sees text appear
+                 progressively rather than waiting for the full response.
 
-    KEY FIXES:
-    1. Send role: "assistant" in first chunk (critical for markdown rendering)
-    2. Stream entire response at once (preserves markdown formatting)
+    Short responses (chitchat, clarification questions) skip Phase 2 and are
+    sent as a single chunk since they require no formatting.
     """
+    chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+    created_time = int(time.time())
+
     try:
+        # ── Phase 1: run graph, skip formatter ──────────────────────────────
         result = await asyncio.to_thread(
             graph.invoke,
-            {"user_query": user_query, "messages": langchain_messages, "user_id": user_id},
+            {"user_query": user_query, "messages": langchain_messages, "user_id": user_id,
+             "skip_formatter": True},
             config={"configurable": {"thread_id": session_id}},
         )
 
@@ -279,87 +283,77 @@ async def generate_stream(user_query, langchain_messages, user_id, session_id, m
         print(f"📌 clarification_message: {result.get('clarification_message')}")
         print(f"📌 semantic_chitchat: {result.get('semantic_chitchat')}")
 
-        clarification_msg = result.get("clarification_message")
-        if clarification_msg:
-            print(f"✅ Clarification detected, returning: {clarification_msg[:100]}...")
+        semantic_chitchat: bool = result.get("semantic_chitchat", False)
+        clarification_msg: str = result.get("clarification_message") or ""
+        awaiting_clarification: bool = result.get("awaiting_clarification", False)
+
+        rag_output = result.get("rag_output") or {}
+        rag_answer: str = (
+            rag_output.get("final_answer", "") if isinstance(rag_output, dict)
+            else getattr(rag_output, "final_answer", "")
+        )
+
+        evaluation = result.get("evaluation") or {}
+        confidence: float = (
+            evaluation.get("confidence_score", 0.8) if isinstance(evaluation, dict)
+            else getattr(evaluation, "confidence_score", 0.8)
+        )
+
+        # ── Determine content to format ──────────────────────────────────────
+        # Chitchat and clarification questions need no formatting — send as-is.
+        if semantic_chitchat or (clarification_msg and awaiting_clarification):
+            print("📄 Streaming chitchat/clarification directly (no formatter)")
             final_response = clarification_msg
-        else:
-            print("📄 No clarification, using formatted response")
-            final_response = result.get("formatted", {}).get("formatted_response", "")
-            final_response = append_sas_to_blob_urls(final_response)
-            if not final_response:
-                print(f"⚠️ No formatted response, result keys: {result.keys()}")
+            yield _sse_chunk(chunk_id, created_time, model, delta={"role": "assistant"})
+            yield _sse_chunk(chunk_id, created_time, model, delta={"content": final_response})
+            yield _sse_chunk(chunk_id, created_time, model, delta={}, finish_reason="stop")
+            yield "data: [DONE]\n\n"
+            return
 
-        chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
-        created_time = int(time.time())
+        # Direct answer from semantic node (e.g. answered from history) or RAG answer.
+        text_to_format = (
+            clarification_msg if (clarification_msg and not awaiting_clarification)
+            else rag_answer
+        )
+        if not text_to_format:
+            print("⚠️ No content to format")
+            yield _sse_chunk(chunk_id, created_time, model, delta={"role": "assistant"})
+            yield _sse_chunk(chunk_id, created_time, model, delta={}, finish_reason="stop")
+            yield "data: [DONE]\n\n"
+            return
 
-        # CRITICAL: Send role first — LibreChat needs this for markdown rendering
-        role_chunk = {
-            "id": chunk_id,
-            "object": "chat.completion.chunk",
-            "created": created_time,
-            "model": model,
-            "choices": [
-                {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
-            ],
-        }
-        yield f"data: {json.dumps(role_chunk)}\n\n"
+        # ── Phase 2: stream formatter LLM token-by-token ─────────────────────
+        print(f"📄 Streaming formatter output ({len(text_to_format)} chars to format)")
+        prompt = build_formatter_prompt(user_query, text_to_format, confidence)
+        llm = create_llm()
 
-        # Send complete markdown in one chunk to preserve formatting
-        content_chunk = {
-            "id": chunk_id,
-            "object": "chat.completion.chunk",
-            "created": created_time,
-            "model": model,
-            "choices": [
-                {"index": 0, "delta": {"content": final_response}, "finish_reason": None}
-            ],
-        }
-        yield f"data: {json.dumps(content_chunk)}\n\n"
+        # CRITICAL: send role first — LibreChat needs this for markdown rendering
+        yield _sse_chunk(chunk_id, created_time, model, delta={"role": "assistant"})
 
-        # Final stop chunk
-        final_chunk = {
-            "id": chunk_id,
-            "object": "chat.completion.chunk",
-            "created": created_time,
-            "model": model,
-            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-        }
-        yield f"data: {json.dumps(final_chunk)}\n\n"
+        async for chunk in llm.astream(prompt):
+            token: str = chunk.content if hasattr(chunk, "content") else str(chunk)
+            if token:
+                yield _sse_chunk(chunk_id, created_time, model, delta={"content": token})
+
+        yield _sse_chunk(chunk_id, created_time, model, delta={}, finish_reason="stop")
         yield "data: [DONE]\n\n"
 
     except Exception as e:
         import traceback
         traceback.print_exc()
 
-        chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
-        created_time = int(time.time())
+        yield _sse_chunk(chunk_id, created_time, model, delta={"role": "assistant"})
 
-        role_chunk = {
-            "id": chunk_id,
-            "object": "chat.completion.chunk",
-            "created": created_time,
-            "model": model,
-            "choices": [
-                {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
-            ],
-        }
-        yield f"data: {json.dumps(role_chunk)}\n\n"
+        # Sanitize error message — never echo filter-related keywords back into
+        # chat history (they would trigger Azure's content filter on every
+        # subsequent request, creating a self-perpetuating loop).
+        raw_err = str(e).lower()
+        if any(kw in raw_err for kw in ("jailbreak", "content_filter", "content filter", "responsibleai")):
+            safe_error = "I wasn't able to format that response due to a content policy check. Please try rephrasing your question."
+        else:
+            safe_error = "Something went wrong while processing your request. Please try again."
 
-        error_chunk = {
-            "id": chunk_id,
-            "object": "chat.completion.chunk",
-            "created": created_time,
-            "model": model,
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {"content": f"\n\n❌ Error: {str(e)}"},
-                    "finish_reason": "stop",
-                }
-            ],
-        }
-        yield f"data: {json.dumps(error_chunk)}\n\n"
+        yield _sse_chunk(chunk_id, created_time, model, delta={"content": safe_error}, finish_reason="stop")
         yield "data: [DONE]\n\n"
 
 

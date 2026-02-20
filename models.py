@@ -40,6 +40,8 @@ class SemanticOutput(BaseModel):
     domain_context: Optional[Dict[str, Any]] = None  # optional
     ambiguity_detected: AmbiguityInfo
     reasoning: Optional[str] = None  # optional
+    task_type: Optional[Literal["summarization", "listing", "content_search", "other"]] = "other"
+    document_category: Optional[str] = None  # e.g. "Link Test", "U&A" – best-guess for schema pre-load
 
 
 # -------------------------
@@ -50,8 +52,8 @@ class RetrievedDoc(BaseModel):
 
     filename: str
     content_path: str
-    score: float
-    pages: str
+    score: Optional[float] = None  # may be absent for listing queries
+    pages: Optional[str] = None    # may be absent for listing queries
     description: str
 
 
@@ -60,8 +62,8 @@ class RAGOutput(BaseModel):
 
     retrieved_docs: List[RetrievedDoc]
     final_answer: str  # ← RAG's synthesized answer
-    search_strategy: str
-    reasoning: str
+    search_strategy: Optional[str] = None
+    reasoning: Optional[str] = None
     total_searches: int
 
 
@@ -116,8 +118,15 @@ class PipelineState(BaseModel):
     awaiting_clarification: bool = False  # Flag to track if we're waiting for clarification response
     previous_ambiguity: Optional[AmbiguityInfo] = None  # Store previous ambiguity for context
 
-    # 🔹 Add retrieval memory to track docs already fetched (changed to list for JSON compatibility)
-    retrieval_memory: Dict[str, List[str]] = Field(
-        default_factory=lambda: {"semantic": [], "rag": []}
-    )
+    # Memories loaded once in semantic_node and reused by rag_node (avoids double DB query).
+    # Each entry is a plain dict with keys: filename, content_path, description, pages, score.
+    user_memories: List[Dict[str, Any]] = Field(default_factory=list)
+
     ambiguity_detected: Optional[AmbiguityInfo] = Field(default_factory=lambda: AmbiguityInfo(ambiguous=False))
+
+    # Set by semantic_node; consumed by rag_node for deterministic flow control.
+    task_type: Optional[str] = None           # "summarization" | "listing" | "content_search" | "other"
+    document_category: Optional[str] = None   # e.g. "Link Test", "U&A" – used to pre-load schema
+
+    # When True, formatter_node skips its LLM call; app.py streams the formatter directly.
+    skip_formatter: bool = False

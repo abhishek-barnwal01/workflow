@@ -132,6 +132,8 @@ Example 8 - Summarize a document (read ALL pages with pagination):
 - WITHOUT ",count:1000" on facets you only get 10 values max.
 - DO NOT invent fields (e.g., metadata_storage_last_modified, author, owner do NOT exist).
 - For semantic index: ONLY use query, index_type, top_k (no filter/facets/skip/select_fields).
+- DEFAULT GEOGRAPHY: if the query has no country/region, add country_ai eq 'India' to filter.
+- DEFAULT TIME PERIOD: if no period is specified or latest is mentioned, check file_time_period_ai in results and use the most recent one (2026 > 2025 > 2024 > …).
     """
 
     index_name = (
