@@ -43,6 +43,25 @@ class SemanticOutput(BaseModel):
     task_type: Optional[Literal["summarization", "listing", "content_search", "other"]] = "other"
     document_category: Optional[str] = None  # e.g. "Link Test", "U&A" – best-guess for schema pre-load
 
+class UnifiedSemanticOutput(BaseModel):
+    """Combined intent classification + enrichment in a single LLM call.
+
+    Eliminates the separate intent → enrichment round-trip for direct and
+    semantic_specific intents (saves ~1-3 s per query).
+    """
+    model_config = {"extra": "forbid"}
+
+    # Intent fields (from IntentClassification)
+    intent_type: Literal["chitchat", "direct", "semantic_specific", "semantic_broad"]
+    confidence: float = Field(ge=0, le=1)
+
+    # Enrichment fields (from SemanticOutput) — populated for direct / semantic_specific
+    enriched_query: str = ""
+    domain_context: Optional[Dict[str, Any]] = None
+    ambiguity_detected: AmbiguityInfo = Field(default_factory=lambda: AmbiguityInfo(ambiguous=False))
+    reasoning: Optional[str] = None
+    task_type: Optional[Literal["summarization", "listing", "content_search", "other"]] = "other"
+    document_category: Optional[str] = None
 
 # -------------------------
 # RAG Node Models
