@@ -92,7 +92,7 @@ async def chat(request: Request):
         iteration = result.get("iteration", 0)
 
         return {
-            "response": formatter_result.get("formatted_response", ""),
+            "response": append_sas_to_blob_urls(formatter_result.get("formatted_response", "")),
             "metadata": {
                 "confidence": eval_result.get("confidence_score", 0.0),
                 "confidence_breakdown": {
@@ -213,7 +213,15 @@ async def chat_completions(request: Request):
 
         formatted_response = result.get("formatted", {}).get("formatted_response", "")
         clarification_msg = result.get("clarification_message", "")
-        final_response = formatted_response or clarification_msg or "I couldn't generate a response."
+        # Fallback to RAG final answer if formatter is skipped or empty (e.g., chat title requests)
+        rag_out = result.get("rag_output") or {}
+        rag_answer = (
+            rag_out.get("final_answer", "") if isinstance(rag_out, dict)
+            else getattr(rag_out, "final_answer", "")
+        )
+        final_response = formatted_response or clarification_msg or rag_answer or "I couldn't generate a response."
+        # Ensure blob links include SAS before sending
+        final_response = append_sas_to_blob_urls(final_response)
 
         response = {
             "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
@@ -304,6 +312,7 @@ async def generate_stream(user_query, langchain_messages, user_id, session_id, m
         if semantic_chitchat or (clarification_msg and awaiting_clarification):
             print("📄 Streaming chitchat/clarification directly (no formatter)")
             final_response = clarification_msg
+            final_response = append_sas_to_blob_urls(final_response)
             yield _sse_chunk(chunk_id, created_time, model, delta={"role": "assistant"})
             yield _sse_chunk(chunk_id, created_time, model, delta={"content": final_response})
             yield _sse_chunk(chunk_id, created_time, model, delta={}, finish_reason="stop")
@@ -321,6 +330,9 @@ async def generate_stream(user_query, langchain_messages, user_id, session_id, m
             yield _sse_chunk(chunk_id, created_time, model, delta={}, finish_reason="stop")
             yield "data: [DONE]\n\n"
             return
+
+        # Ensure any blob links in the raw text already carry SAS before formatting
+        text_to_format = append_sas_to_blob_urls(text_to_format)
 
         # ── Phase 2: stream formatter LLM token-by-token ─────────────────────
         print(f"📄 Streaming formatter output ({len(text_to_format)} chars to format)")
@@ -356,6 +368,11 @@ async def generate_stream(user_query, langchain_messages, user_id, session_id, m
         yield _sse_chunk(chunk_id, created_time, model, delta={"content": safe_error}, finish_reason="stop")
         yield "data: [DONE]\n\n"
 
+
+@app.get("/heartbeat")
+async def heartbeat():
+    """Basic health check endpoint."""
+    return {"status": "OK", "message": "Server is running"}
 
 # ---------- Run Server ----------
 if __name__ == "__main__":

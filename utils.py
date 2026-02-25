@@ -76,7 +76,8 @@ def create_llm(timeout: float = 120.0, max_retries: int = 2) -> AzureChatOpenAI:
         azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
         api_key=config.AZURE_OPENAI_KEY,
         api_version=config.AZURE_OPENAI_API_VERSION,
-        temperature=1,
+        # temperature=1,
+        reasoning_effort="low",
         timeout=timeout,
         max_retries=max_retries,
     )
