@@ -213,13 +213,19 @@ async def chat_completions(request: Request):
 
         formatted_response = result.get("formatted", {}).get("formatted_response", "")
         clarification_msg = result.get("clarification_message", "")
+        # Document listing output (SQL agent, pre-formatted)
+        doc_listing = result.get("document_listing_output") or {}
+        doc_listing_response = (
+            doc_listing.get("formatted_response", "") if isinstance(doc_listing, dict)
+            else getattr(doc_listing, "formatted_response", "")
+        )
         # Fallback to RAG final answer if formatter is skipped or empty (e.g., chat title requests)
         rag_out = result.get("rag_output") or {}
         rag_answer = (
             rag_out.get("final_answer", "") if isinstance(rag_out, dict)
             else getattr(rag_out, "final_answer", "")
         )
-        final_response = formatted_response or clarification_msg or rag_answer or "I couldn't generate a response."
+        final_response = formatted_response or doc_listing_response or clarification_msg or rag_answer or "I couldn't generate a response."
         # Ensure blob links include SAS before sending
         final_response = append_sas_to_blob_urls(final_response)
 
@@ -308,10 +314,16 @@ async def generate_stream(user_query, langchain_messages, user_id, session_id, m
         )
 
         # ── Determine content to format ──────────────────────────────────────
-        # Chitchat and clarification questions need no formatting — send as-is.
-        if semantic_chitchat or (clarification_msg and awaiting_clarification):
-            print("📄 Streaming chitchat/clarification directly (no formatter)")
-            final_response = clarification_msg
+        # Chitchat, clarification questions, and document listings need no formatting — send as-is.
+        doc_listing = result.get("document_listing_output") or {}
+        doc_listing_response: str = (
+            doc_listing.get("formatted_response", "") if isinstance(doc_listing, dict)
+            else getattr(doc_listing, "formatted_response", "")
+        )
+
+        if semantic_chitchat or (clarification_msg and awaiting_clarification) or doc_listing_response:
+            print("📄 Streaming chitchat/clarification/listing directly (no formatter)")
+            final_response = doc_listing_response or clarification_msg
             final_response = append_sas_to_blob_urls(final_response)
             yield _sse_chunk(chunk_id, created_time, model, delta={"role": "assistant"})
             yield _sse_chunk(chunk_id, created_time, model, delta={"content": final_response})

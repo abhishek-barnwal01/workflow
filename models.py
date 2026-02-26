@@ -10,7 +10,7 @@ from langgraph.graph import add_messages
 class IntentClassification(BaseModel):
     model_config = {"extra": "forbid"}
 
-    intent_type: Literal["chitchat", "direct", "semantic_specific", "semantic_broad"]
+    intent_type: Literal["chitchat", "direct", "semantic_specific", "semantic_broad", "document_listing"]
     reasoning: str
     confidence: float = Field(ge=0, le=1)
 
@@ -52,7 +52,7 @@ class UnifiedSemanticOutput(BaseModel):
     model_config = {"extra": "forbid"}
 
     # Intent fields (from IntentClassification)
-    intent_type: Literal["chitchat", "direct", "semantic_specific", "semantic_broad"]
+    intent_type: Literal["chitchat", "direct", "semantic_specific", "semantic_broad", "document_listing"]
     confidence: float = Field(ge=0, le=1)
 
     # Enrichment fields (from SemanticOutput) — populated for direct / semantic_specific
@@ -108,6 +108,18 @@ class EvaluatorOutput(BaseModel):
 
 
 # -------------------------
+# Document Listing Models
+# -------------------------
+class DocumentListingOutput(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    formatted_response: str  # Pre-formatted markdown response
+    documents: List[Dict[str, Any]] = Field(default_factory=list)  # Raw rows from SQL
+    total_count: int = 0
+    query_used: str = ""
+
+
+# -------------------------
 # Formatter Node Models
 # -------------------------
 class FormatterOutput(BaseModel):
@@ -149,3 +161,7 @@ class PipelineState(BaseModel):
 
     # When True, formatter_node skips its LLM call; app.py streams the formatter directly.
     skip_formatter: bool = False
+
+    # Document listing output — set by document_retriever_node for listing queries.
+    # Preserved in state so subsequent queries can reference the listed documents.
+    document_listing_output: Optional[DocumentListingOutput] = None

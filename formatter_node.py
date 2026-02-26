@@ -339,5 +339,5 @@ def formatter_node(state: PipelineState) -> Dict[str, Any]:
     # ----------------- Return -----------------
     return {
         "messages": sanitize_any(state.messages),  # preserve chat history
-        "formatted": sanitize_any(output.dict()),   # structured formatted output
+        "formatted": sanitize_any(output.model_dump()),   # structured formatted output
     }

@@ -169,7 +169,7 @@ def rag_node(state: PipelineState, config: RunnableConfig = None) -> Dict[str, A
                 retrieved_docs=[],
                 final_answer=state.clarification_message,
                 total_searches=0,
-            ).dict()),
+            ).model_dump()),
         }
 
     thread_id = config.get("configurable", {}).get("thread_id", "default")
@@ -510,7 +510,7 @@ CRITICAL:
     print("🐛 DEBUG: RAG NODE - Structured Output")
     print("-"*70)
     print(f"Output Type: {type(output)}")
-    print(f"Output Dict:\n{json.dumps(output.dict(), indent=2, default=str)}")
+    print(f"Output Dict:\n{json.dumps(output.model_dump(), indent=2, default=str)}")
     print("-"*70)
     if output.retrieved_docs:
         for i, d in enumerate(output.retrieved_docs):
@@ -535,5 +535,5 @@ CRITICAL:
 
     return {
         "messages": sanitize_any(all_new_messages),
-        "rag_output": sanitize_any(output.dict()),
+        "rag_output": sanitize_any(output.model_dump()),
     }

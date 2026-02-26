@@ -109,10 +109,33 @@ def semantic_node(state: PipelineState, config: RunnableConfig = None) -> Dict[s
         print("UNIFIED STEP: Intent Classification + Enrichment")
         print("-" * 70)
 
-        llm = create_llm()
+        # ── Python guard: LibreChat title-generation requests ──
+        # LibreChat sends "Provide a concise, 5-word-or-less title..." after each
+        # assistant response.  This is not a real user query — short-circuit to chitchat
+        # so it never hits document_retriever or RAG.
+        _q_lower = user_query.strip().lower()
+        if "title for the conversation" in _q_lower or "concise" in _q_lower and "title" in _q_lower:
+            print("⏭️  Detected LibreChat title-generation request — routing as chitchat")
+            intent = IntentClassification(
+                intent_type="chitchat",
+                reasoning="LibreChat title generation request detected",
+                confidence=1.0,
+            )
+            # Create a minimal unified object for downstream compat
+            unified = UnifiedSemanticOutput(
+                intent_type="chitchat",
+                confidence=1.0,
+                enriched_query="",
+                ambiguity_detected=AmbiguityInfo(ambiguous=False),
+                reasoning="LibreChat title generation request",
+            )
+            # Jump straight to the intent handler below (skip LLM call)
+        else:
 
-        unified_prompt_template = ChatPromptTemplate.from_messages([
-            ("system", """You are an advanced intent classifier AND query enrichment agent for an enterprise RAG system.
+            llm = create_llm()
+
+            unified_prompt_template = ChatPromptTemplate.from_messages([
+                ("system", """You are an advanced intent classifier AND query enrichment agent for an enterprise RAG system.
 In ONE pass, classify the intent AND produce an enriched query.
 
 USER MEMORIES (previously retrieved documents):
@@ -131,26 +154,31 @@ Classify into ONE category:
 2. **direct**: Simple general knowledge questions not requiring company documents
    - Examples: "what is GDP", "define market share", "explain EBITDA"
 
-3. **semantic_specific**: Specific, targeted questions about known entities
-   - Examples: "what is Lux market share in Q3", "List all U&A reports", "show brand equity reports"
-   - Characteristics: mentions SPECIFIC entities, brands, products, metrics, or SPECIFIC KNOWN report types
-   - IMPORTANT: "List all X reports" where X is a known type (U&A, Dipstick, Brand Equity, Concept Test) = ALWAYS semantic_specific
+3. **document_listing**: Requests to LIST, COUNT, or SHOW available documents/reports
+   - Examples: "list all U&A reports", "show brand equity reports", "how many link testing reports do we have", "what reports are available for Cinthol", "show all reports for India 2023"
+   - Characteristics: user wants a LIST of document titles/metadata — NOT content analysis
+   - Trigger words: "list", "show", "how many", "count", "what reports", "which documents", "available documents"
+   - IMPORTANT: If user asks to LIST or COUNT documents by category, brand, country, or time period → ALWAYS document_listing
+   - Set enriched_query = concise search description for SQL (e.g., "U&A reports India", "brand equity Godrej 2023")
 
-4. **semantic_broad**: High-level, exploratory questions requiring entity discovery
+4. **semantic_specific**: Specific, targeted questions about CONTENT within documents
+   - Examples: "what is Lux market share in Q3", "summarize the GN1 link test", "what does the U&A study say about purchase drivers"
+   - Characteristics: mentions SPECIFIC entities AND wants to READ/ANALYSE content
+   - IMPORTANT: "Summarize X report" = semantic_specific (needs content), "List all X reports" = document_listing (needs metadata only)
+
+5. **semantic_broad**: High-level, exploratory questions requiring entity discovery
    - Examples: "what products do we have", "show all regions", "compare all brands"
    - Characteristics: OPEN-ENDED, EXPLORATORY about UNKNOWN entities, BROAD and generic
    - Set enriched_query = "" (tool-calling loop will handle)
 
 DECISION LOGIC (in order):
-Q0: Listing/counting a SPECIFIC KNOWN report type? → semantic_specific
-Q1: Mentions SPECIFIC entities by name? → semantic_specific
-Q2: EXPLORATORY / GENERIC listing? → Check Q3
-Q3: Chat history provides context? → semantic_specific, else → semantic_broad
-Q4: Unresolved AMBIGUITY with no history context? → semantic_broad
-
-KEY: "List all U&A/Dipstick/Brand Equity/Concept Test" = semantic_specific
-     "List all products/brands/reports" = semantic_broad
-     With history context resolving entities = semantic_specific
+Q0: Asking to LIST, COUNT, or SHOW documents/reports? → document_listing
+Q1: Listing/counting a SPECIFIC KNOWN report type? → document_listing
+Q2: Asking to READ, SUMMARIZE, or ANALYSE content? → semantic_specific
+Q3: Mentions SPECIFIC entities by name for content questions? → semantic_specific
+Q4: EXPLORATORY / GENERIC discovery? → Check Q5
+Q5: Chat history provides context? → semantic_specific, else → semantic_broad
+Q6: Unresolved AMBIGUITY with no history context? → semantic_broad
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 PART 2 — ENRICHMENT (for direct / semantic_specific only)
@@ -184,45 +212,45 @@ When user wants to read, summarize, or get insights from a specific document:
 ─── OUTPUT ────────────────────────────────────────────────────────────────
 Return all fields: intent_type, confidence, enriched_query, domain_context,
 ambiguity_detected, reasoning, task_type, document_category."""),
-            MessagesPlaceholder("messages"),
-            ("human", "Query: {user_query}\n\nClassify intent AND enrich in one step. Check chat history before marking semantic_broad.")
-        ])
+                MessagesPlaceholder("messages"),
+                ("human", "Query: {user_query}\n\nClassify intent AND enrich in one step. Check chat history before marking semantic_broad.")
+            ])
 
-        unified_messages = unified_prompt_template.format_messages(
-            memories_text=memories_text,
-            messages=chat_history,
-            user_query=user_query
-        )
+            unified_messages = unified_prompt_template.format_messages(
+                memories_text=memories_text,
+                messages=chat_history,
+                user_query=user_query
+            )
 
-        llm_unified = llm.with_structured_output(UnifiedSemanticOutput, method="function_calling")
+            llm_unified = llm.with_structured_output(UnifiedSemanticOutput, method="function_calling")
 
-        try:
-            unified: UnifiedSemanticOutput = llm_unified.invoke(unified_messages)
-        except Exception as e:
-            error_msg = str(e)
-            print(f"⚠️ Unified Classification Error: {error_msg[:200]}")
-            if "content_filter" in error_msg.lower() or "jailbreak" in error_msg.lower():
-                print("   Content filter triggered - defaulting to 'direct' intent")
-                unified = UnifiedSemanticOutput(
-                    intent_type="direct",
-                    confidence=0.5,
-                    enriched_query=user_query,
-                    ambiguity_detected=AmbiguityInfo(ambiguous=False),
-                    reasoning="Content filter triggered, using original query",
-                )
-            else:
-                raise
+            try:
+                unified: UnifiedSemanticOutput = llm_unified.invoke(unified_messages)
+            except Exception as e:
+                error_msg = str(e)
+                print(f"⚠️ Unified Classification Error: {error_msg[:200]}")
+                if "content_filter" in error_msg.lower() or "jailbreak" in error_msg.lower():
+                    print("   Content filter triggered - defaulting to 'direct' intent")
+                    unified = UnifiedSemanticOutput(
+                        intent_type="direct",
+                        confidence=0.5,
+                        enriched_query=user_query,
+                        ambiguity_detected=AmbiguityInfo(ambiguous=False),
+                        reasoning="Content filter triggered, using original query",
+                    )
+                else:
+                    raise
 
-        # Map to the existing IntentClassification for downstream compat
-        intent = IntentClassification(
-            intent_type=unified.intent_type,
-            reasoning=unified.reasoning or "",
-            confidence=unified.confidence,
-        )
+            # Map to the existing IntentClassification for downstream compat
+            intent = IntentClassification(
+                intent_type=unified.intent_type,
+                reasoning=unified.reasoning or "",
+                confidence=unified.confidence,
+            )
 
-        print(f"✅ Intent: {intent.intent_type}")
-        print(f"   Confidence: {intent.confidence:.2f}")
-        print(f"   Reasoning: {intent.reasoning}")
+            print(f"✅ Intent: {intent.intent_type}")
+            print(f"   Confidence: {intent.confidence:.2f}")
+            print(f"   Reasoning: {intent.reasoning}")
     
     # Track new messages for state
     all_new_messages = []
@@ -422,7 +450,7 @@ ambiguity_detected, reasoning, task_type, document_category."""),
     # STEP 2D: SEMANTIC_BROAD - Full tool-calling loop with ambiguity detection
     # ========================================================================
 
-    else:  # intent.intent_type == "semantic_broad"
+    elif intent.intent_type == "semantic_broad":
         print("\n" + "-" * 70)
         print("STEP 2D: Semantic Broad - Full AI Search Tool Loop")
         print("-" * 70)
@@ -589,4 +617,44 @@ OUTPUT:
                 if output.ambiguity_detected
                 else None
             ),
+        }
+
+    # ========================================================================
+    # STEP 2E: DOCUMENT_LISTING - Route to SQL-based document retriever
+    # ========================================================================
+
+    elif intent.intent_type == "document_listing":
+        print("\n" + "-" * 70)
+        print("STEP 2E: Document Listing - Routing to SQL document retriever")
+        print("-" * 70)
+        print("ℹ️  User wants to list/count documents — fast SQL path, no RAG needed")
+
+        # Enrichment was already computed in the unified call
+        listing_query = unified.enriched_query or user_query
+
+        print(f"✅ Listing Query: {listing_query}")
+        print(f"   Reasoning: {unified.reasoning}")
+        print("➡️  Routing to document_retriever node")
+
+        if unified.reasoning:
+            reasoning_message = AIMessage(
+                content=safe_utf8(unified.reasoning),
+                metadata={"type": "internal_reasoning", "node": "semantic"}
+            )
+            all_new_messages.append(reasoning_message)
+
+        return {
+            "messages": sanitize_any(all_new_messages),
+            "user_memories": sanitize_any(user_memories),
+            "clarification_message": None,
+            "semantic_chitchat": False,
+            "awaiting_clarification": False,
+            "previous_ambiguity": None,
+            "enriched_query": safe_utf8(listing_query),
+            "domain_context": sanitize_any(unified.domain_context),
+            "ambiguity_detected": sanitize_any(
+                unified.ambiguity_detected.model_dump()
+            ),
+            "task_type": "listing",
+            "document_category": unified.document_category,
         }

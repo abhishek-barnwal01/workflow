@@ -91,5 +91,5 @@ Be conservative. If answer is incomplete, score low. Provide professional, struc
     # ----------------- Return -----------------
     return {
         "messages": sanitize_any(state.messages),  # preserve chat history
-        "evaluation": sanitize_any(output.dict()),  # structured evaluation
+        "evaluation": sanitize_any(output.model_dump()),  # structured evaluation
     }
