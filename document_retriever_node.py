@@ -327,7 +327,9 @@ the clarifying message as your final text response.
                     else:
                         print(f"  ✅ Returned {result.get('returned_count', '?')} rows "
                               f"(total: {result.get('total_count', '?')})")
-                        last_tool_rows = result.get("rows", [])
+                        fetched = result.get("rows", [])
+                        if fetched:          # never overwrite with an empty result
+                            last_tool_rows = fetched
                 except Exception:
                     pass
 
@@ -342,22 +344,17 @@ the clarifying message as your final text response.
             break
 
     # ── Determine final response ──
-    # Priority: If the LLM wrote a text response in its final turn (no tool calls),
-    # it's either a clarification question or a "no results" explanation — use it as-is.
-    # Otherwise, format the retrieved rows deterministically in Python.
+    # The only reliable signal is whether SQL returned rows:
+    #   • rows returned  → format them in Python (deterministic, consistent)
+    #   • no rows        → LLM wrote a clarification question or "no results" explanation; use that text
+    # Avoid keyword heuristics ("which", "available", "?") — they match normal result text too.
     llm_final_text = (response.content.strip() if response and response.content else "")
-    llm_ended_with_text = llm_final_text and not (response and response.tool_calls)
 
-    if llm_ended_with_text and (not last_tool_rows or len(last_tool_rows) == 0
-                                 or llm_final_text.startswith("I couldn't")
-                                 or "did you mean" in llm_final_text.lower()
-                                 or "available" in llm_final_text.lower()
-                                 or "which" in llm_final_text.lower()
-                                 or "?" in llm_final_text):
-        # LLM is asking a clarifying question or explaining no results
+    if not last_tool_rows:
+        # No SQL results — LLM produced either a clarification question or a no-results message
         print("💬 Using LLM's clarification/explanation text")
-        final_response = llm_final_text
-        listed_docs = []  # Don't store discovery rows as document results
+        final_response = llm_final_text or "No documents found matching your query."
+        listed_docs = []
     elif last_tool_rows:
         # Normal case — format document rows in Python
         listed_docs = last_tool_rows
@@ -438,10 +435,15 @@ the clarifying message as your final text response.
     )
     all_new_messages.append(ai_message)
 
+    # If no rows were returned and the LLM asked a question, flag the state so
+    # semantic_node routes the user's next reply straight back here (issue 5 fix).
+    is_asking_clarification = (not last_tool_rows) and ("?" in final_response)
+
     return {
         "messages": sanitize_any(all_new_messages),
         "document_listing_output": sanitize_any(listing_output.dict()),
         "clarification_message": safe_utf8(final_response),  # For app.py response chain
         "semantic_chitchat": False,
-        "awaiting_clarification": False,
+        "awaiting_clarification": is_asking_clarification,
+        "rag_output": None,
     }

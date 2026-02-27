@@ -96,7 +96,7 @@ def _extract_retrieved_docs_from_messages(agent_messages: list) -> list:
             data = json.loads(msg.content)
         except (json.JSONDecodeError, TypeError):
             continue
-        for doc in data.get("docs", []):
+        for doc in data.get("documents", []):
             title = doc.get("document_title", "")
             if not title:
                 continue
