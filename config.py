@@ -28,3 +28,12 @@ POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", 5432))
 POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "postgres")
 POSTGRES_DB = os.getenv("POSTGRES_DB", "qt328pp")
+
+# Data Source — "local" uses PostgreSQL (metadata_gcpl), "dev" uses Databricks (silver_deterministic_data)
+DATA_SOURCE = os.getenv("DATA_SOURCE", "local")
+
+# Databricks (required when DATA_SOURCE="dev")
+DATABRICKS_HOST = os.getenv("DATABRICKS_HOST", "").replace("https://", "").replace("http://", "")
+DATABRICKS_HTTP_PATH = os.getenv("DATABRICKS_HTTP_PATH", "")
+DATABRICKS_TOKEN = os.getenv("DATABRICKS_TOKEN", "")
+DATABRICKS_TABLE = os.getenv("DATABRICKS_TABLE", "silver_deterministic_data")

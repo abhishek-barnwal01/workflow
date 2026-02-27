@@ -17,6 +17,9 @@ langgraph-checkpoint-postgres>=3.0.0
 # PostgreSQL
 psycopg[binary,pool]>=3.0.0
 
+# Databricks (used when DATA_SOURCE=dev)
+databricks-sql-connector>=3.0.0
+
 # Azure
 azure-search-documents==11.4.0
 openai>=1.0.0
