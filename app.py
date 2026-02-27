@@ -321,7 +321,7 @@ async def generate_stream(user_query, langchain_messages, user_id, session_id, m
             else getattr(doc_listing, "formatted_response", "")
         )
 
-        if semantic_chitchat or (clarification_msg and awaiting_clarification) or doc_listing_response:
+        if semantic_chitchat or (clarification_msg and awaiting_clarification) or (doc_listing_response and not rag_answer):
             print("📄 Streaming chitchat/clarification/listing directly (no formatter)")
             final_response = doc_listing_response or clarification_msg
             final_response = append_sas_to_blob_urls(final_response)
