@@ -296,6 +296,7 @@ async def generate_stream(user_query, langchain_messages, user_id, session_id, m
         print(f"\n🔍 DEBUG generate_stream result keys: {list(result.keys())}")
         print(f"📌 clarification_message: {result.get('clarification_message')}")
         print(f"📌 semantic_chitchat: {result.get('semantic_chitchat')}")
+        print(f"📌 task_type: {result.get('task_type')}")
 
         semantic_chitchat: bool = result.get("semantic_chitchat", False)
         clarification_msg: str = result.get("clarification_message") or ""
@@ -315,13 +316,16 @@ async def generate_stream(user_query, langchain_messages, user_id, session_id, m
 
         # ── Determine content to format ──────────────────────────────────────
         # Chitchat, clarification questions, and document listings need no formatting — send as-is.
+        # NOTE: doc_listing_response persists across turns via checkpointer, so we
+        # guard with `not rag_answer` to avoid using a stale listing when the
+        # current turn actually went through the RAG path.
         doc_listing = result.get("document_listing_output") or {}
         doc_listing_response: str = (
             doc_listing.get("formatted_response", "") if isinstance(doc_listing, dict)
             else getattr(doc_listing, "formatted_response", "")
         )
 
-        if semantic_chitchat or (clarification_msg and awaiting_clarification) or doc_listing_response:
+        if semantic_chitchat or (clarification_msg and awaiting_clarification) or (doc_listing_response and not rag_answer):
             print("📄 Streaming chitchat/clarification/listing directly (no formatter)")
             final_response = doc_listing_response or clarification_msg
             final_response = append_sas_to_blob_urls(final_response)
