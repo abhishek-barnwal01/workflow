@@ -18,9 +18,19 @@ from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import tool
 
+from config import (
+    DATA_SOURCE,
+    DATABRICKS_HOST, DATABRICKS_HTTP_PATH, DATABRICKS_TOKEN, DATABRICKS_TABLE,
+)
 from models import PipelineState, DocumentListingOutput
 from persistence import pool as pg_pool
 from utils import safe_utf8, sanitize_any, create_llm, execute_tool_calls
+
+if DATA_SOURCE == "dev":
+    from databricks import sql as databricks_sql
+
+# Active table name for the current data source
+_ACTIVE_TABLE = "metadata_gcpl" if DATA_SOURCE == "local" else DATABRICKS_TABLE
 
 
 # ---------------------------------------------------------------------------
@@ -56,11 +66,11 @@ def _clean_filename(raw: str) -> str:
 
 @tool
 def execute_metadata_sql(query: str) -> str:
-    """Execute a read-only SQL query against the metadata_gcpl table and return results as JSON.
+    """Execute a read-only SQL query against the active metadata table and return results as JSON.
 
     RULES:
     - Only SELECT statements are allowed.
-    - The query MUST target the metadata_gcpl table.
+    - The query MUST target the active metadata table (see system prompt for the exact table name).
     - Maximum 200 rows returned.
 
     AVAILABLE COLUMNS (all VARCHAR):
@@ -157,32 +167,54 @@ def execute_metadata_sql(query: str) -> str:
         if f" {kw} " in f" {normalized} " or normalized.startswith(f"{kw} "):
             return json.dumps({"error": f"Forbidden keyword: {kw}", "query": query})
 
-    if "metadata_gcpl" not in query.lower():
-        return json.dumps({"error": "Query must target the metadata_gcpl table.", "query": query})
+    if _ACTIVE_TABLE not in query.lower():
+        return json.dumps({"error": f"Query must target the {_ACTIVE_TABLE} table.", "query": query})
 
     # ── Execute ──
     try:
-        with pg_pool.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(query)
-                columns = [desc[0] for desc in cur.description] if cur.description else []
-                rows = cur.fetchmany(200)
+        if DATA_SOURCE == "local":
+            # PostgreSQL
+            with pg_pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query)
+                    columns = [desc[0] for desc in cur.description] if cur.description else []
+                    rows = cur.fetchmany(200)
 
-                # The pool uses dict_row, so rows are already dicts.
-                # If they're tuples (no row_factory), convert manually.
-                if rows and isinstance(rows[0], dict):
-                    results = list(rows)
-                else:
+                    # The pool uses dict_row, so rows are already dicts.
+                    # If they're tuples (no row_factory), convert manually.
+                    if rows and isinstance(rows[0], dict):
+                        results = list(rows)
+                    else:
+                        results = [dict(zip(columns, row)) for row in rows]
+
+                    total = cur.rowcount if cur.rowcount >= 0 else len(results)
+
+                    return json.dumps({
+                        "columns": columns,
+                        "rows": results,
+                        "returned_count": len(results),
+                        "total_count": total,
+                    }, default=str)
+        else:
+            # Databricks
+            with databricks_sql.connect(
+                server_hostname=DATABRICKS_HOST,
+                http_path=DATABRICKS_HTTP_PATH,
+                access_token=DATABRICKS_TOKEN,
+            ) as conn:
+                with conn.cursor() as cur:
+                    cur.execute(query)
+                    columns = [desc[0] for desc in cur.description] if cur.description else []
+                    rows = cur.fetchmany(200)
                     results = [dict(zip(columns, row)) for row in rows]
+                    total = len(results)
 
-                total = cur.rowcount if cur.rowcount >= 0 else len(results)
-
-                return json.dumps({
-                    "columns": columns,
-                    "rows": results,
-                    "returned_count": len(results),
-                    "total_count": total,
-                }, default=str)
+                    return json.dumps({
+                        "columns": columns,
+                        "rows": results,
+                        "returned_count": len(results),
+                        "total_count": total,
+                    }, default=str)
 
     except Exception as e:
         return json.dumps({"error": str(e), "query": query})
@@ -222,8 +254,10 @@ def document_retriever_node(state: PipelineState) -> Dict[str, Any]:
     llm_with_tools = llm.bind_tools(tools)
 
     prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are a document listing agent for an enterprise document management system.
-Your job is to query the metadata_gcpl table to find and list documents matching the user's request.
+        ("system", f"""You are a document listing agent for an enterprise document management system.
+Your job is to query the **{_ACTIVE_TABLE}** table to find and list documents matching the user's request.
+
+ACTIVE DATA SOURCE: {DATA_SOURCE} — always use **{_ACTIVE_TABLE}** as the table name in every query.
 
 INSTRUCTIONS:
 1. Analyse the user's query and chat history to understand what documents they want.
@@ -247,7 +281,7 @@ VERIFY:
    obviously correspond to the vague term, that term is AMBIGUOUS.
 3. For any ambiguous or unmatched term, run a discovery query:
      SELECT DISTINCT COALESCE(product_category_det, product_category_ai) AS product_category
-     FROM metadata_gcpl
+     FROM {_ACTIVE_TABLE}
      WHERE (file_category_det ILIKE '%Link testing%' OR file_category_ai ILIKE '%Link testing%')
      ORDER BY product_category;
 4. Present the unmatched term + discovered options to the user:
@@ -273,14 +307,14 @@ STEP A — Broaden the failing filter.
 STEP B — Discover available values.
   Run a discovery query to show the user what values actually exist:
     SELECT DISTINCT COALESCE(product_category_det, product_category_ai) AS product_category
-    FROM metadata_gcpl
+    FROM {_ACTIVE_TABLE}
     WHERE COALESCE(file_category_det, file_category_ai) ILIKE '%Link testing%'
       AND COALESCE(country_det, country_ai) ILIKE '%India%'
     ORDER BY product_category;
 
   Or for brands:
     SELECT DISTINCT COALESCE(brand_det, brand_ai) AS brand
-    FROM metadata_gcpl
+    FROM {_ACTIVE_TABLE}
     WHERE COALESCE(file_category_det, file_category_ai) ILIKE '%Link testing%'
     ORDER BY brand;
 
