@@ -28,8 +28,8 @@ def clarification_node(state: PipelineState) -> Dict[str, Any]:
         if len(ambiguity.options) > _MAX_OPTIONS else ""
     )
     message = (
-        f"I found multiple {ambiguity.entity}. Please clarify which one you mean:\n"
-        f"{options_text}{truncation_note}\n"
+        f"### I found multiple {ambiguity.entity}. Please clarify which one you mean:\n"
+        f"{options_text}{truncation_note}\n\n"
         f"You can also reply 'ALL' to select all options."
     )
 

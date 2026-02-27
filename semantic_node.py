@@ -79,6 +79,30 @@ def semantic_node(state: PipelineState, config: RunnableConfig = None) -> Dict[s
     # CLARIFICATION RESPONSE MODE: Skip intent classification
     # ========================================================================
 
+    # ========================================================================
+    # LISTING CLARIFICATION MODE: user responding to a document_retriever question
+    # (e.g. "which product category did you mean?") — skip intent classification
+    # and route straight back to document_retriever with the user's refined query.
+    # ========================================================================
+    if awaiting_clarification and state.task_type == "listing":
+        print("\n" + "-" * 70)
+        print("🔄 LISTING CLARIFICATION RESPONSE — routing back to document_retriever")
+        print(f"   Refined query: '{user_query}'")
+        print("-" * 70)
+        return {
+            "messages": sanitize_any([]),
+            "user_memories": sanitize_any(user_memories),
+            "enriched_query": safe_utf8(user_query),
+            "task_type": "listing",
+            "clarification_message": None,
+            "semantic_chitchat": False,
+            "awaiting_clarification": False,
+            "previous_ambiguity": None,
+            "domain_context": None,
+            "ambiguity_detected": sanitize_any(AmbiguityInfo(ambiguous=False).model_dump()),
+            "document_category": None,
+        }
+
     if awaiting_clarification and previous_ambiguity:
         print("\n" + "-" * 70)
         print("🔄 CLARIFICATION RESPONSE DETECTED")
@@ -131,26 +155,31 @@ Classify into ONE category:
 2. **direct**: Simple general knowledge questions not requiring company documents
    - Examples: "what is GDP", "define market share", "explain EBITDA"
 
-3. **semantic_specific**: Specific, targeted questions about known entities
-   - Examples: "what is Lux market share in Q3", "List all U&A reports", "show brand equity reports"
-   - Characteristics: mentions SPECIFIC entities, brands, products, metrics, or SPECIFIC KNOWN report types
-   - IMPORTANT: "List all X reports" where X is a known type (U&A, Dipstick, Brand Equity, Concept Test) = ALWAYS semantic_specific
+3. **document_listing**: Requests to LIST, COUNT, or SHOW available documents/reports
+   - Examples: "list all U&A reports", "show brand equity reports", "how many link testing reports do we have", "what reports are available for Cinthol", "show all reports for India 2023"
+   - Characteristics: user wants a LIST of document titles/metadata — NOT content analysis
+   - Trigger words: "list", "show", "how many", "count", "what reports", "which documents", "available documents"
+   - IMPORTANT: If user asks to LIST or COUNT documents by category, brand, country, or time period → ALWAYS document_listing
+   - Set enriched_query = concise search description for SQL (e.g., "U&A reports India", "brand equity Godrej 2023")
+   
+4. **semantic_specific**: Specific, targeted questions about CONTENT within documents
+   - Examples: "what is Lux market share in Q3", "summarize the GN1 link test", "what does the U&A study say about purchase drivers"
+   - Characteristics: mentions SPECIFIC entities AND wants to READ/ANALYSE content
+   - IMPORTANT: "Summarize X report" = semantic_specific (needs content), "List all X reports" = document_listing (needs metadata only)
 
-4. **semantic_broad**: High-level, exploratory questions requiring entity discovery
+5. **semantic_broad**: High-level, exploratory questions requiring entity discovery
    - Examples: "what products do we have", "show all regions", "compare all brands"
    - Characteristics: OPEN-ENDED, EXPLORATORY about UNKNOWN entities, BROAD and generic
    - Set enriched_query = "" (tool-calling loop will handle)
-
+   
 DECISION LOGIC (in order):
-Q0: Listing/counting a SPECIFIC KNOWN report type? → semantic_specific
-Q1: Mentions SPECIFIC entities by name? → semantic_specific
-Q2: EXPLORATORY / GENERIC listing? → Check Q3
-Q3: Chat history provides context? → semantic_specific, else → semantic_broad
-Q4: Unresolved AMBIGUITY with no history context? → semantic_broad
-
-KEY: "List all U&A/Dipstick/Brand Equity/Concept Test" = semantic_specific
-     "List all products/brands/reports" = semantic_broad
-     With history context resolving entities = semantic_specific
+Q0: Asking to LIST, COUNT, or SHOW documents/reports? → document_listing
+Q1: Listing/counting a SPECIFIC KNOWN report type? → document_listing
+Q2: Asking to READ, SUMMARIZE, or ANALYSE content? → semantic_specific
+Q3: Mentions SPECIFIC entities by name for content questions? → semantic_specific
+Q4: EXPLORATORY / GENERIC discovery? → Check Q5
+Q5: Chat history provides context? → semantic_specific, else → semantic_broad
+Q6: Unresolved AMBIGUITY with no history context? → semantic_broad
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 PART 2 — ENRICHMENT (for direct / semantic_specific only)
@@ -336,15 +365,62 @@ ambiguity_detected, reasoning, task_type, document_category."""),
             "ambiguity_detected": sanitize_any(
                 output.ambiguity_detected.model_dump()
             ),
+            "task_type": None,        # clear any stale "listing" from a prior turn
+            "document_category": None,
+        }
+
+    # ========================================================================
+    # STEP 2C: DOCUMENT_LISTING - Route to SQL-based document retriever
+    # ========================================================================
+
+
+    elif intent.intent_type == "document_listing":
+        print("\n" + "-" * 70)
+        print("STEP 2C: Document Listing - Routing to SQL document retriever")
+        print("-" * 70)
+        print("ℹ️  User wants to list/count documents — fast SQL path, no RAG needed")
+
+
+        # Enrichment was already computed in the unified call
+        listing_query = unified.enriched_query or user_query
+
+
+        print(f"✅ Listing Query: {listing_query}")
+        print(f"   Reasoning: {unified.reasoning}")
+        print("➡️  Routing to document_retriever node")
+
+
+        if unified.reasoning:
+            reasoning_message = AIMessage(
+                content=safe_utf8(unified.reasoning),
+                metadata={"type": "internal_reasoning", "node": "semantic"}
+            )
+            all_new_messages.append(reasoning_message)
+
+
+        return {
+            "messages": sanitize_any(all_new_messages),
+            "user_memories": sanitize_any(user_memories),
+            "clarification_message": None,
+            "semantic_chitchat": False,
+            "awaiting_clarification": False,
+            "previous_ambiguity": None,
+            "enriched_query": safe_utf8(listing_query),
+            "domain_context": sanitize_any(unified.domain_context),
+            "ambiguity_detected": sanitize_any(
+                unified.ambiguity_detected.model_dump()
+            ),
+            "task_type": "listing",
+            "document_category": unified.document_category,
         }
     
     # ========================================================================
-    # STEP 2C: SEMANTIC_SPECIFIC - Query modification without AI search tool
+    # STEP 2D: SEMANTIC_SPECIFIC - Query modification without AI search tool
     # ========================================================================
 
     elif intent.intent_type == "semantic_specific":
         print("\n" + "-" * 70)
-        print("STEP 2C: Semantic Specific - Enrichment already done in unified call")
+        print("STEP 2D: Semantic Specific - Enrichment already done in unified call")
         print("-" * 70)
         print("ℹ️  User knows exactly what they want - specific entities mentioned")
         print("ℹ️  Enrichment computed in unified call — no extra LLM round-trip")
@@ -419,12 +495,12 @@ ambiguity_detected, reasoning, task_type, document_category."""),
         }
 
     # ========================================================================
-    # STEP 2D: SEMANTIC_BROAD - Full tool-calling loop with ambiguity detection
+    # STEP 2E: SEMANTIC_BROAD - Full tool-calling loop with ambiguity detection
     # ========================================================================
 
     else:  # intent.intent_type == "semantic_broad"
         print("\n" + "-" * 70)
-        print("STEP 2D: Semantic Broad - Full AI Search Tool Loop")
+        print("STEP 2E: Semantic Broad - Full AI Search Tool Loop")
         print("-" * 70)
         print("ℹ️  High-level/exploratory question - using AI search to discover entities")
         print("ℹ️  Will detect ambiguities and ask for clarification if needed")
@@ -589,4 +665,6 @@ OUTPUT:
                 if output.ambiguity_detected
                 else None
             ),
+            "task_type": None,        # clear any stale "listing" from a prior turn
+            "document_category": None,
         }

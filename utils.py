@@ -66,11 +66,43 @@ def filter_sensitive_content(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# LLM factory
+# LLM singleton
 # ---------------------------------------------------------------------------
+# AzureChatOpenAI is thread-safe and stateless between calls — one instance
+# per process is sufficient.  Re-creating it on every call (the old pattern)
+# paid the TCP + TLS handshake cost (~50-200 ms) on each request.
+#
+# Non-default callers (e.g. different timeout) can still pass override kwargs;
+# they receive a fresh instance only in that case.
+
+_DEFAULT_LLM: AzureChatOpenAI | None = None
+
 
 def create_llm(timeout: float = 120.0, max_retries: int = 2) -> AzureChatOpenAI:
-    """Create a configured AzureChatOpenAI instance."""
+    """Return the shared AzureChatOpenAI singleton.
+
+    A new instance is created only when non-default timeout/max_retries are
+    requested, which should be rare.  All normal call sites share one client
+    and therefore one underlying HTTP connection pool.
+    """
+    global _DEFAULT_LLM
+
+    is_default = (timeout == 120.0 and max_retries == 2)
+
+    if is_default:
+        if _DEFAULT_LLM is None:
+            _DEFAULT_LLM = AzureChatOpenAI(
+                azure_deployment=config.AZURE_OPENAI_DEPLOYMENT,
+                azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
+                api_key=config.AZURE_OPENAI_KEY,
+                api_version=config.AZURE_OPENAI_API_VERSION,
+                temperature=1,
+                timeout=timeout,
+                max_retries=max_retries,
+            )
+        return _DEFAULT_LLM
+
+    # Non-default params — caller needs specific behaviour; give a fresh instance.
     return AzureChatOpenAI(
         azure_deployment=config.AZURE_OPENAI_DEPLOYMENT,
         azure_endpoint=config.AZURE_OPENAI_ENDPOINT,

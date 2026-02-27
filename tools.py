@@ -9,32 +9,58 @@ import json
 from typing import Optional, List
 import hashlib
 
-# 🚀 EMBEDDING CACHE - Avoid regenerating embeddings for same queries
-_embedding_cache = {}
+# ---------------------------------------------------------------------------
+# Module-level singletons — created once per process, reused on every call.
+#
+# Previously:
+#   • AzureOpenAI()  was instantiated inside get_embedding() on every call
+#   • SearchClient() was instantiated inside azure_ai_search() on every call
+#
+# Each instantiation opens a new TCP + TLS connection to the Azure endpoint
+# (~50-300 ms).  Singletons reuse the underlying httpx connection pool,
+# paying that cost only once at import time.
+# ---------------------------------------------------------------------------
+
+# Embedding client singleton
+_embedding_client: AzureOpenAI = AzureOpenAI(
+    api_key=config.AZURE_OPENAI_KEY,
+    api_version=config.AZURE_OPENAI_API_VERSION,
+    azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
+)
+
+# SearchClient singletons — one per index (both are stateless and thread-safe)
+_search_clients: dict[str, SearchClient] = {
+    "main_data": SearchClient(
+        endpoint=config.AZURE_SEARCH_ENDPOINT,
+        index_name=config.MAIN_DATA_INDEX_NAME,
+        credential=AzureKeyCredential(config.AZURE_SEARCH_KEY),
+    ),
+    "semantic": SearchClient(
+        endpoint=config.AZURE_SEARCH_ENDPOINT,
+        index_name=config.SEMANTIC_INDEX_NAME,
+        credential=AzureKeyCredential(config.AZURE_SEARCH_KEY),
+    ),
+}
+
+# Embedding result cache — keyed by MD5(text); survives across requests
+_embedding_cache: dict = {}
+
 
 def get_embedding(text: str) -> list:
-    """Get embedding for text using Azure OpenAI with caching"""
+    """Return the embedding vector for *text*, using the module-level cache."""
     try:
-        # Cache key based on text hash
         cache_key = hashlib.md5(text.encode()).hexdigest()
-        
-        # Return cached embedding if available
+
         if cache_key in _embedding_cache:
             return _embedding_cache[cache_key]
-        
-        client = AzureOpenAI(
-            api_key=config.AZURE_OPENAI_KEY,
-            api_version=config.AZURE_OPENAI_API_VERSION,
-            azure_endpoint=config.AZURE_OPENAI_ENDPOINT
-        )
 
-        response = client.embeddings.create(
+        response = _embedding_client.embeddings.create(
             input=text,
-            model=config.AZURE_OPENAI_EMBEDDING_DEPLOYMENT
+            model=config.AZURE_OPENAI_EMBEDDING_DEPLOYMENT,
         )
 
         embedding = response.data[0].embedding
-        _embedding_cache[cache_key] = embedding  # Cache for future use
+        _embedding_cache[cache_key] = embedding
         return embedding
     except Exception as e:
         print(f"   ⚠️ Embedding error: {e}")
@@ -153,11 +179,7 @@ Example 8 - Summarize a document (read ALL pages with pagination):
     print(f"\n🔍 azure_ai_search | index={index_type} | query={query[:60]}{'...' if len(query)>60 else ''} | top_k={top_k} | filter={filter or 'none'} | facets={facets or 'none'} | skip={skip or 0}")
 
     try:
-        client = SearchClient(
-            endpoint=config.AZURE_SEARCH_ENDPOINT,
-            index_name=index_name,
-            credential=AzureKeyCredential(config.AZURE_SEARCH_KEY)
-        )
+        client = _search_clients[index_type]
 
         # Determine select fields
         if select_fields:
