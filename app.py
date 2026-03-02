@@ -323,7 +323,12 @@ async def generate_stream(user_query, langchain_messages, user_id, session_id, m
 
         if semantic_chitchat or (clarification_msg and awaiting_clarification) or (doc_listing_response and not rag_answer):
             print("📄 Streaming chitchat/clarification/listing directly (no formatter)")
-            final_response = doc_listing_response or clarification_msg
+            # Chitchat / clarification take priority; doc_listing is fallback only
+            # when neither is active (prevents stale listing from prior turns).
+            if semantic_chitchat or (clarification_msg and awaiting_clarification):
+                final_response = clarification_msg
+            else:
+                final_response = doc_listing_response or clarification_msg
             final_response = append_sas_to_blob_urls(final_response)
             yield _sse_chunk(chunk_id, created_time, model, delta={"role": "assistant"})
             yield _sse_chunk(chunk_id, created_time, model, delta={"content": final_response})

@@ -101,6 +101,7 @@ def semantic_node(state: PipelineState, config: RunnableConfig = None) -> Dict[s
             "domain_context": None,
             "ambiguity_detected": sanitize_any(AmbiguityInfo(ambiguous=False).model_dump()),
             "document_category": None,
+            "document_listing_output": None,  # clear stale listing from prior turn
         }
 
     if awaiting_clarification and previous_ambiguity:
@@ -321,8 +322,9 @@ ambiguity_detected, reasoning, task_type, document_category."""),
             "ambiguity_detected": sanitize_any(
                 AmbiguityInfo(ambiguous=False).model_dump()
             ),
+            "document_listing_output": None,  # clear stale listing from prior turn
         }
-    
+
     # ========================================================================
     # STEP 2B: DIRECT - Simple enrichment without tool
     # ========================================================================
@@ -367,6 +369,7 @@ ambiguity_detected, reasoning, task_type, document_category."""),
             ),
             "task_type": None,        # clear any stale "listing" from a prior turn
             "document_category": None,
+            "document_listing_output": None,  # clear stale listing from prior turn
         }
 
     # ========================================================================
@@ -412,8 +415,9 @@ ambiguity_detected, reasoning, task_type, document_category."""),
             ),
             "task_type": "listing",
             "document_category": unified.document_category,
+            "document_listing_output": None,  # clear stale listing; document_retriever_node sets fresh
         }
-    
+
     # ========================================================================
     # STEP 2D: SEMANTIC_SPECIFIC - Query modification without AI search tool
     # ========================================================================
@@ -463,6 +467,7 @@ ambiguity_detected, reasoning, task_type, document_category."""),
                 "ambiguity_detected": sanitize_any(output.ambiguity_detected.model_dump()),
                 "task_type": output.task_type,
                 "document_category": output.document_category,
+                "document_listing_output": None,  # clear stale listing from prior turn
             }
 
         print(f"✅ Enriched Query: {output.enriched_query}")
@@ -492,6 +497,7 @@ ambiguity_detected, reasoning, task_type, document_category."""),
             ),
             "task_type": output.task_type,
             "document_category": output.document_category,
+            "document_listing_output": None,  # clear stale listing from prior turn
         }
 
     # ========================================================================
@@ -667,4 +673,5 @@ OUTPUT:
             ),
             "task_type": None,        # clear any stale "listing" from a prior turn
             "document_category": None,
+            "document_listing_output": None,  # clear stale listing from prior turn
         }
