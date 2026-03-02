@@ -20,6 +20,57 @@ from utils import safe_utf8, sanitize_any, create_llm, execute_tool_calls
 
 
 # ---------------------------------------------------------------------------
+# Dynamic column value discovery (cached at module load)
+# ---------------------------------------------------------------------------
+
+_FILTERABLE_COLUMNS = {
+    "file_category_det": "file_category",
+    "product_category_det": "product_category",
+    "brand_det": "brand",
+    "country_det": "country",
+    "file_time_period_det": "time_period",
+}
+
+
+def _fetch_distinct_column_values() -> Dict[str, List[str]]:
+    """Query the metadata_gcpl table for distinct values of every filterable
+    column.  Returns a dict mapping display names to sorted value lists.
+    Called once at module load and cached in ``_COLUMN_VALUES``.
+    """
+    result: Dict[str, List[str]] = {}
+    try:
+        with pg_pool.connection() as conn:
+            with conn.cursor() as cur:
+                for col, display in _FILTERABLE_COLUMNS.items():
+                    cur.execute(
+                        f"SELECT DISTINCT {col} FROM metadata_gcpl "
+                        f"WHERE {col} IS NOT NULL AND {col} != '' "
+                        f"ORDER BY {col}"
+                    )
+                    result[display] = [row[col] for row in cur.fetchall()]
+    except Exception as e:
+        print(f"⚠️ Failed to fetch distinct column values: {e}")
+    return result
+
+
+# Cached at import time — lightweight queries, no repeated DB hits per request
+_COLUMN_VALUES: Dict[str, List[str]] = _fetch_distinct_column_values()
+
+
+def _format_column_values_for_prompt() -> str:
+    """Format the cached distinct values into a text block suitable for
+    injection into the LLM system prompt."""
+    if not _COLUMN_VALUES:
+        return "(Could not load column values from database.)"
+    sections = []
+    for display_name, values in _COLUMN_VALUES.items():
+        if values:
+            quoted = ", ".join(f"'{v}'" for v in values)
+            sections.append(f"  {display_name}: {quoted}")
+    return "\n".join(sections)
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -79,12 +130,9 @@ def execute_metadata_sql(query: str) -> str:
         file_time_period_det ILIKE '%X%'
         country_det ILIKE '%X%'
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    EXACT file_category values (case-insensitive matching recommended via ILIKE):
-        'Analysis', 'Annual presentation', 'Brand equity', 'Brand Health track',
-        'Concept testing', 'Home panel', 'Link testing', 'Media Optimization',
-        'Miscellaneous', 'Needscope', 'Post Launch Evaluation',
-        'Product acceptance testing', 'Product Performance Evaluation',
-        'Retail audit', 'Usage & Attitude (U&A)'
+    EXACT column values: Refer to the AVAILABLE COLUMN VALUES section in the
+    system prompt for current valid values of file_category, product_category,
+    brand, country, and time_period.  Use ILIKE for case-insensitive matching.
     EXAMPLE QUERIES:
     -- List all U&A reports
     SELECT DISTINCT
@@ -190,6 +238,9 @@ def document_retriever_node(state: PipelineState) -> Dict[str, Any]:
     llm = create_llm()
     llm_with_tools = llm.bind_tools(tools)
 
+    # Build the dynamic values block for the system prompt
+    column_values_block = _format_column_values_for_prompt()
+
     prompt = ChatPromptTemplate.from_messages([
         ("system", """You are a document listing agent for an enterprise document management system.
 Your job is to query the metadata_gcpl table to find and list documents matching the user's request.
@@ -199,6 +250,10 @@ INSTRUCTIONS:
 3. ALWAYS use ONLY the _det columns for both SELECT and WHERE.
 4. Use ILIKE for case-insensitive matching on categories, brands, etc.
 5. Always SELECT DISTINCT on document_title to avoid duplicates.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AVAILABLE COLUMN VALUES (loaded from database — use these for accurate filtering)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+"""  + column_values_block + """
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 RESULT VERIFICATION (CRITICAL — run after EVERY query that returns rows)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
