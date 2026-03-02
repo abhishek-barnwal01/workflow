@@ -3,8 +3,8 @@ Operates like Step 2E in semantic_node.py: LLM with bound SQL tool →
 tool-calling loop → inline-formatted markdown response.
 Routes here when intent = document_listing. Skips RAG and formatter
 entirely — returns a pre-formatted markdown list directly.
-Uses *_det columns only for display (SELECT); filters (WHERE) use
-OR across both *_det and *_ai columns to catch all matches.
+Uses *_det columns only — for both display (SELECT) and filtering (WHERE).
+The *_ai columns are not used.
 """
 
 import json
@@ -58,38 +58,28 @@ def execute_metadata_sql(query: str) -> str:
     - Maximum 200 rows returned.
     AVAILABLE COLUMNS (all VARCHAR):
         document_title          — Document name / title
-        file_category_det       — Deterministic file category
-        file_category_ai        — AI-generated file category
-        product_category_det    — Deterministic product category
-        product_category_ai     — AI-generated product category
-        brand_det               — Deterministic brand name
-        brand_ai                — AI-generated brand name
-        file_time_period_det    — Deterministic time period
-        file_time_period_ai     — AI-generated time period
-        country_det             — Deterministic country
-        country_ai              — AI-generated country
+        file_category_det       — File category
+        product_category_det    — Product category
+        brand_det               — Brand name
+        file_time_period_det    — Time period
+        country_det             — Country
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     COLUMN USAGE RULES (CRITICAL)
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    The _det and _ai columns may contain DIFFERENTLY WORDED values for the
-    same concept (e.g., _det='Link Test', _ai='Link testing'). To avoid
-    missed matches:
-    FOR SELECT (display): Use ONLY the _det columns.
+    Use ONLY the _det columns for BOTH display and filtering.
+    Do NOT use any _ai columns.
+    FOR SELECT (display):
         file_category_det AS file_category
         product_category_det AS product_category
         brand_det AS brand
         file_time_period_det AS time_period
         country_det AS country
-    FOR WHERE (filtering): Use OR across BOTH columns to catch all matches.
-        (file_category_det ILIKE '%X%' OR file_category_ai ILIKE '%X%')
-        (product_category_det ILIKE '%X%' OR product_category_ai ILIKE '%X%')
-        (brand_det ILIKE '%X%' OR brand_ai ILIKE '%X%')
-        (file_time_period_det ILIKE '%X%' OR file_time_period_ai ILIKE '%X%')
-        (country_det ILIKE '%X%' OR country_ai ILIKE '%X%')
-    WRONG — misses rows where only _ai matches:
-        WHERE file_category_det ILIKE '%Link testing%'
-    CORRECT — catches matches in either column:
-        WHERE (file_category_det ILIKE '%Link testing%' OR file_category_ai ILIKE '%Link testing%')
+    FOR WHERE (filtering):
+        file_category_det ILIKE '%X%'
+        product_category_det ILIKE '%X%'
+        brand_det ILIKE '%X%'
+        file_time_period_det ILIKE '%X%'
+        country_det ILIKE '%X%'
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     EXACT file_category values (case-insensitive matching recommended via ILIKE):
         'Analysis', 'Annual presentation', 'Brand equity', 'Brand Health track',
@@ -106,7 +96,7 @@ def execute_metadata_sql(query: str) -> str:
         file_time_period_det AS time_period,
         country_det AS country
     FROM metadata_gcpl
-    WHERE (file_category_det ILIKE '%Usage & Attitude%' OR file_category_ai ILIKE '%Usage & Attitude%')
+    WHERE file_category_det ILIKE '%Usage & Attitude%'
     ORDER BY document_title
     LIMIT 200;
     -- Count reports by category
@@ -123,8 +113,8 @@ def execute_metadata_sql(query: str) -> str:
         file_time_period_det AS time_period,
         country_det AS country
     FROM metadata_gcpl
-    WHERE (file_category_det ILIKE '%Brand equity%' OR file_category_ai ILIKE '%Brand equity%')
-      AND (brand_det ILIKE '%Godrej%' OR brand_ai ILIKE '%Godrej%')
+    WHERE file_category_det ILIKE '%Brand equity%'
+      AND brand_det ILIKE '%Godrej%'
     ORDER BY document_title
     LIMIT 200;
     """
@@ -208,7 +198,7 @@ Your job is to query the metadata_gcpl table to find and list documents matching
 INSTRUCTIONS:
 1. Analyse the user's query and chat history to understand what documents they want.
 2. Build a SQL query using the execute_metadata_sql tool.
-3. ALWAYS use ONLY the _det columns for display (SELECT): e.g. file_category_det AS file_category. Do NOT use COALESCE with _ai columns.
+3. ALWAYS use ONLY the _det columns for both SELECT and WHERE. Do NOT use _ai columns at all.
 4. Use ILIKE for case-insensitive matching on categories, brands, etc.
 5. Always SELECT DISTINCT on document_title to avoid duplicates.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -226,7 +216,7 @@ VERIFY:
 3. For any ambiguous or unmatched term, run a discovery query:
      SELECT DISTINCT product_category_det AS product_category
      FROM metadata_gcpl
-     WHERE (file_category_det ILIKE '%Link testing%' OR file_category_ai ILIKE '%Link testing%')
+     WHERE file_category_det ILIKE '%Link testing%'
      ORDER BY product_category;
 4. Present the unmatched term + discovered options to the user:
      "I found results for **insecticides** but couldn't match **'bars'** to a
@@ -248,13 +238,13 @@ STEP B — Discover available values.
   Run a discovery query to show the user what values actually exist:
     SELECT DISTINCT product_category_det AS product_category
     FROM metadata_gcpl
-    WHERE (file_category_det ILIKE '%Link testing%' OR file_category_ai ILIKE '%Link testing%')
-      AND (country_det ILIKE '%India%' OR country_ai ILIKE '%India%')
+    WHERE file_category_det ILIKE '%Link testing%'
+      AND country_det ILIKE '%India%'
     ORDER BY product_category;
   Or for brands:
     SELECT DISTINCT brand_det AS brand
     FROM metadata_gcpl
-    WHERE (file_category_det ILIKE '%Link testing%' OR file_category_ai ILIKE '%Link testing%')
+    WHERE file_category_det ILIKE '%Link testing%'
     ORDER BY brand;
 STEP C — Present options to the user.
   Format as a clarifying question:
