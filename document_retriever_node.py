@@ -105,7 +105,7 @@ def execute_metadata_sql(query: str) -> str:
     RULES:
     - Only SELECT statements are allowed.
     - The query MUST target the metadata_gcpl table.
-    - Maximum 200 rows returned.
+    - Always include a LIMIT clause in your SQL to keep results manageable.
     AVAILABLE COLUMNS (all VARCHAR):
         document_title          — Document name / title
         file_category_det       — File category
@@ -184,7 +184,7 @@ def execute_metadata_sql(query: str) -> str:
             with conn.cursor() as cur:
                 cur.execute(query)
                 columns = [desc[0] for desc in cur.description] if cur.description else []
-                rows = cur.fetchmany(200)
+                rows = cur.fetchall()
 
                 # The pool uses dict_row, so rows are already dicts.
                 # If they're tuples (no row_factory), convert manually.
