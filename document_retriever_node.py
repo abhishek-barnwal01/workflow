@@ -4,7 +4,6 @@ tool-calling loop → inline-formatted markdown response.
 Routes here when intent = document_listing. Skips RAG and formatter
 entirely — returns a pre-formatted markdown list directly.
 Uses *_det columns only — for both display (SELECT) and filtering (WHERE).
-The *_ai columns are not used.
 """
 
 import json
@@ -67,7 +66,6 @@ def execute_metadata_sql(query: str) -> str:
     COLUMN USAGE RULES (CRITICAL)
     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     Use ONLY the _det columns for BOTH display and filtering.
-    Do NOT use any _ai columns.
     FOR SELECT (display):
         file_category_det AS file_category
         product_category_det AS product_category
@@ -198,7 +196,7 @@ Your job is to query the metadata_gcpl table to find and list documents matching
 INSTRUCTIONS:
 1. Analyse the user's query and chat history to understand what documents they want.
 2. Build a SQL query using the execute_metadata_sql tool.
-3. ALWAYS use ONLY the _det columns for both SELECT and WHERE. Do NOT use _ai columns at all.
+3. ALWAYS use ONLY the _det columns for both SELECT and WHERE.
 4. Use ILIKE for case-insensitive matching on categories, brands, etc.
 5. Always SELECT DISTINCT on document_title to avoid duplicates.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
