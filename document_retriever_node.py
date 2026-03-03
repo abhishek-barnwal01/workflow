@@ -8,8 +8,9 @@ Supports both PostgreSQL (local) and Databricks (development) backends.
 """
 
 import json
+import os
 import re
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -17,8 +18,60 @@ from langchain_core.tools import tool
 
 from config import METADATA_TABLE_NAME, DB_BACKEND
 from models import PipelineState, DocumentListingOutput
-from persistence import execute_query
+from persistence import pool as pg_pool
 from utils import safe_utf8, sanitize_any, create_llm, execute_tool_calls
+
+
+# ---------------------------------------------------------------------------
+# Database query layer (supports PostgreSQL and Databricks)
+# ---------------------------------------------------------------------------
+
+_databricks_connection = None
+
+
+def _get_databricks_connection():
+    """Return a reusable Databricks SQL connection (created on first call)."""
+    global _databricks_connection
+    if _databricks_connection is None:
+        from databricks import sql as databricks_sql
+        _databricks_connection = databricks_sql.connect(
+            server_hostname=os.getenv("DATABRICKS_SERVER_HOSTNAME", ""),
+            http_path=os.getenv("DATABRICKS_HTTP_PATH", ""),
+            access_token=os.getenv("DATABRICKS_ACCESS_TOKEN", ""),
+        )
+    return _databricks_connection
+
+
+def _execute_query(query: str, max_rows: int = 200) -> Tuple[List[str], List[Dict[str, Any]], int]:
+    """Execute a read-only SQL query against the active backend.
+
+    Returns (columns, rows, total_count).
+    Routes to PostgreSQL or Databricks based on DB_BACKEND config.
+    """
+    if DB_BACKEND == "databricks":
+        conn = _get_databricks_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(query)
+            columns = [desc[0] for desc in cursor.description] if cursor.description else []
+            raw_rows = cursor.fetchmany(max_rows)
+            rows = [dict(zip(columns, row)) for row in raw_rows]
+            total = cursor.rowcount if cursor.rowcount and cursor.rowcount >= 0 else len(rows)
+            return columns, rows, total
+        finally:
+            cursor.close()
+    else:
+        with pg_pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query)
+                columns = [desc[0] for desc in cur.description] if cur.description else []
+                raw_rows = cur.fetchmany(max_rows)
+                if raw_rows and isinstance(raw_rows[0], dict):
+                    rows = list(raw_rows)
+                else:
+                    rows = [dict(zip(columns, row)) for row in raw_rows]
+                total = cur.rowcount if cur.rowcount >= 0 else len(rows)
+                return columns, rows, total
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +106,7 @@ def _fetch_distinct_column_values() -> Dict[str, List[str]]:
                 f"WHERE {col} IS NOT NULL AND {col} != '' "
                 f"ORDER BY {col}"
             )
-            columns, rows, total = execute_query(query, max_rows=500)
+            columns, rows, total = _execute_query(query, max_rows=500)
             result[display] = [row[col] for row in rows if row.get(col)]
         except Exception as e:
             # Column may not exist in this environment — skip gracefully
@@ -279,7 +332,7 @@ def execute_metadata_sql(query: str) -> str:
 
     # ── Execute via the unified query interface ──
     try:
-        columns, rows, total = execute_query(query, max_rows=200)
+        columns, rows, total = _execute_query(query, max_rows=200)
 
         return json.dumps({
             "columns": columns,
