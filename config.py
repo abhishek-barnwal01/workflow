@@ -28,3 +28,14 @@ POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", 5432))
 POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "postgres")
 POSTGRES_DB = os.getenv("POSTGRES_DB", "qt328pp")
+
+# Database backend: "postgres" (local) or "databricks" (development)
+DB_BACKEND = os.getenv("DB_BACKEND", "postgres")
+
+# Metadata table name — differs between local and development environments
+METADATA_TABLE_NAME = os.getenv("METADATA_TABLE_NAME", "metadata_gcpl")
+
+# Databricks SQL Connector (used when DB_BACKEND=databricks)
+DATABRICKS_SERVER_HOSTNAME = os.getenv("DATABRICKS_SERVER_HOSTNAME", "")
+DATABRICKS_HTTP_PATH = os.getenv("DATABRICKS_HTTP_PATH", "")
+DATABRICKS_ACCESS_TOKEN = os.getenv("DATABRICKS_ACCESS_TOKEN", "")
