@@ -240,8 +240,8 @@ RULES:
 - Only SELECT statements are allowed.
 - The query MUST target the {_TABLE_NAME} table.
 - Maximum 200 rows returned.
-AVAILABLE COLUMNS (all VARCHAR):
-    document_title              — Document name / title
+AVAILABLE COLUMNS (all VARCHAR) — use ONLY these exact names:
+    document_title              — Document name / title (NO _det suffix!)
     file_category_det           — File category (e.g., Link Testing, Brand Health Track)
     file_sub_category_det       — File sub-category
     product_category_det        — Product category (e.g., Household Insecticide, Personal Wash)
@@ -250,7 +250,11 @@ AVAILABLE COLUMNS (all VARCHAR):
     sub_brand_variant_det       — Sub-brand or variant
     country_det                 — Country (e.g., India, Indonesia)
     region_det                  — Region
-    file_time_period_det        — Time period
+    file_time_period_det        — Time period (MUST include "file_" prefix!)
+⚠️ COMMON MISTAKES — these columns DO NOT EXIST:
+    ✗ document_title_det   → use document_title (no _det suffix)
+    ✗ time_period_det      → use file_time_period_det (needs "file_" prefix)
+    ✗ time_period          → use file_time_period_det
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
 COLUMN USAGE RULES (CRITICAL)
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
@@ -395,6 +399,9 @@ INSTRUCTIONS:
 4. Use ILIKE for case-insensitive matching on categories, brands, etc.
 5. Always SELECT DISTINCT on document_title to avoid duplicates.
 6. Include all relevant metadata columns in SELECT for richer results.
+⚠️ CRITICAL COLUMN NAME RULES:
+- "document_title" has NO _det suffix. NEVER use "document_title_det" — it does not exist.
+- The time period column is "file_time_period_det" (with "file_" prefix). NEVER use "time_period_det" or "time_period" — they do not exist.
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
 AVAILABLE COLUMN VALUES (loaded from database \u2014 use these for accurate filtering)
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
