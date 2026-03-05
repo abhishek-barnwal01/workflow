@@ -236,52 +236,37 @@ def _format_results(listed_docs: List[Dict[str, Any]]) -> str:
 
 # Build the tool docstring dynamically based on the configured table name
 _TOOL_DOCSTRING = f"""Execute a read-only SQL query against the {_TABLE_NAME} table and return results as JSON.
+
 RULES:
 - Only SELECT statements are allowed.
 - The query MUST target the {_TABLE_NAME} table.
 - Maximum 200 rows returned.
-AVAILABLE COLUMNS (all VARCHAR) — use ONLY these exact names:
-    document_title              — Document name / title (NO _det suffix!)
-    file_category_det           — File category (e.g., Link Testing, Brand Health Track)
-    file_sub_category_det       — File sub-category
-    product_category_det        — Product category (e.g., Household Insecticide, Personal Wash)
-    product_sub_category_det    — Product sub-category
-    brand_det                   — Brand name (e.g., Good Knight, Cinthol)
-    sub_brand_variant_det       — Sub-brand or variant
-    country_det                 — Country (e.g., India, Indonesia)
-    region_det                  — Region
-    file_time_period_det        — Time period (MUST include "file_" prefix!)
-⚠️ COMMON MISTAKES — these columns DO NOT EXIST:
-    ✗ document_title_det   → use document_title (no _det suffix)
-    ✗ time_period_det      → use file_time_period_det (needs "file_" prefix)
-    ✗ time_period          → use file_time_period_det
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-COLUMN USAGE RULES (CRITICAL)
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-Use ONLY the _det columns for BOTH display and filtering.
-FOR SELECT (display):
-    file_category_det AS file_category
-    file_sub_category_det AS file_sub_category
-    product_category_det AS product_category
-    product_sub_category_det AS product_sub_category
-    brand_det AS brand
-    sub_brand_variant_det AS sub_brand_variant
-    country_det AS country
-    region_det AS region
-    file_time_period_det AS time_period
-FOR WHERE (filtering):
-    file_category_det ILIKE '%X%'
-    file_sub_category_det ILIKE '%X%'
-    product_category_det ILIKE '%X%'
-    product_sub_category_det ILIKE '%X%'
-    brand_det ILIKE '%X%'
-    sub_brand_variant_det ILIKE '%X%'
-    country_det ILIKE '%X%'
-    region_det ILIKE '%X%'
-    file_time_period_det ILIKE '%X%'
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-EXACT column values: Refer to the AVAILABLE COLUMN VALUES section in the
-system prompt for current valid values.  Use ILIKE for case-insensitive matching.
+
+NAMING CONVENTION:
+  Columns suffixed with "_det" hold AI-determined metadata (classified after upload).
+  "document_title" is the original filename set at creation time — it is NOT
+  AI-determined, so it has no _det suffix.
+  The time-period column carries a "file_" prefix: file_time_period_det.
+
+COMPLETE COLUMN LIST (all VARCHAR):
+  document_title                — original document filename (no _det suffix)
+  file_category_det             — e.g. Link Testing, Brand Health Track
+  file_sub_category_det         — file sub-category
+  product_category_det          — e.g. Household Insecticide, Personal Wash
+  product_sub_category_det      — product sub-category
+  brand_det                     — e.g. Good Knight, Cinthol
+  sub_brand_variant_det         — sub-brand or variant
+  country_det                   — e.g. India, Indonesia
+  region_det                    — region
+  file_time_period_det          — time period
+
+COLUMN USAGE:
+  Use _det columns for both SELECT and WHERE.  Alias them without the suffix:
+    file_category_det AS file_category, brand_det AS brand, ...
+  Use ILIKE for case-insensitive filtering:
+    brand_det ILIKE '%Godrej%'
+  Refer to AVAILABLE COLUMN VALUES in the system prompt for valid values.
+
 EXAMPLE QUERIES:
 -- List all U&A reports
 SELECT DISTINCT
@@ -294,6 +279,7 @@ FROM {_TABLE_NAME}
 WHERE file_category_det ILIKE '%Usage & Attitude%'
 ORDER BY document_title
 LIMIT 200;
+
 -- Count reports by category
 SELECT
     file_category_det AS file_category,
@@ -301,7 +287,8 @@ SELECT
 FROM {_TABLE_NAME}
 GROUP BY file_category
 ORDER BY doc_count DESC;
--- List brand equity reports for a specific brand and region
+
+-- List brand equity reports for a specific brand
 SELECT DISTINCT
     document_title,
     brand_det AS brand,
@@ -395,13 +382,15 @@ Your job is to query the {_TABLE_NAME} table to find and list documents matching
 INSTRUCTIONS:
 1. Analyse the user's query and chat history to understand what documents they want.
 2. Build a SQL query using the execute_metadata_sql tool.
-3. ALWAYS use ONLY the _det columns for both SELECT and WHERE.
+3. Use _det columns for both SELECT and WHERE. Alias them without the suffix for display.
 4. Use ILIKE for case-insensitive matching on categories, brands, etc.
 5. Always SELECT DISTINCT on document_title to avoid duplicates.
 6. Include all relevant metadata columns in SELECT for richer results.
-⚠️ CRITICAL COLUMN NAME RULES:
-- "document_title" has NO _det suffix. NEVER use "document_title_det" — it does not exist.
-- The time period column is "file_time_period_det" (with "file_" prefix). NEVER use "time_period_det" or "time_period" — they do not exist.
+
+NAMING CONVENTION (understand this, don't memorise column names):
+  "_det" columns = AI-determined metadata, classified after upload.
+  "document_title" = original filename from creation time, NOT AI-determined, so no _det.
+  The time-period column is prefixed with "file_": file_time_period_det.
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
 AVAILABLE COLUMN VALUES (loaded from database \u2014 use these for accurate filtering)
 \u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
