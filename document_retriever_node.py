@@ -197,7 +197,7 @@ def _format_results(listed_docs: List[Dict[str, Any]]) -> str:
     has_rich_metadata = len(active_cols) > 0
 
     if has_rich_metadata and count >= 3:
-        # ── Table format for 3+ results with metadata ──
+        # -- Table format for 3+ results with metadata --
         header = "| # | Document Title | " + " | ".join(lbl for _, lbl in active_cols) + " |"
         separator = "|:---:|---|" + "|".join("---" for _ in active_cols) + "|"
         lines.append(header)
@@ -211,7 +211,7 @@ def _format_results(listed_docs: List[Dict[str, Any]]) -> str:
                 col_vals.append(v if v else "\u2014")
             lines.append(f"| {i} | {title} | {' | '.join(col_vals)} |")
     else:
-        # ── Numbered list for fewer results or sparse metadata ──
+        # -- Numbered list for fewer results or sparse metadata --
         for i, row in enumerate(listed_docs, 1):
             title = _clean_filename(row.get("document_title", "Untitled"))
             meta_parts = []
@@ -236,48 +236,37 @@ def _format_results(listed_docs: List[Dict[str, Any]]) -> str:
 
 # Build the tool docstring dynamically based on the configured table name
 _TOOL_DOCSTRING = f"""Execute a read-only SQL query against the {_TABLE_NAME} table and return results as JSON.
+
 RULES:
 - Only SELECT statements are allowed.
 - The query MUST target the {_TABLE_NAME} table.
 - Maximum 200 rows returned.
-AVAILABLE COLUMNS (all VARCHAR):
-    document_title              — Document name / title
-    file_category_det           — File category (e.g., Link Testing, Brand Health Track)
-    file_sub_category_det       — File sub-category
-    product_category_det        — Product category (e.g., Household Insecticide, Personal Wash)
-    product_sub_category_det    — Product sub-category
-    brand_det                   — Brand name (e.g., Good Knight, Cinthol)
-    sub_brand_variant_det       — Sub-brand or variant
-    country_det                 — Country (e.g., India, Indonesia)
-    region_det                  — Region
-    file_time_period_det        — Time period
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-COLUMN USAGE RULES (CRITICAL)
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-Use ONLY the _det columns for BOTH display and filtering.
-FOR SELECT (display):
-    file_category_det AS file_category
-    file_sub_category_det AS file_sub_category
-    product_category_det AS product_category
-    product_sub_category_det AS product_sub_category
-    brand_det AS brand
-    sub_brand_variant_det AS sub_brand_variant
-    country_det AS country
-    region_det AS region
-    file_time_period_det AS time_period
-FOR WHERE (filtering):
-    file_category_det ILIKE '%X%'
-    file_sub_category_det ILIKE '%X%'
-    product_category_det ILIKE '%X%'
-    product_sub_category_det ILIKE '%X%'
-    brand_det ILIKE '%X%'
-    sub_brand_variant_det ILIKE '%X%'
-    country_det ILIKE '%X%'
-    region_det ILIKE '%X%'
-    file_time_period_det ILIKE '%X%'
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-EXACT column values: Refer to the AVAILABLE COLUMN VALUES section in the
-system prompt for current valid values.  Use ILIKE for case-insensitive matching.
+
+NAMING CONVENTION:
+  Columns suffixed with "_det" hold AI-determined metadata (classified after upload).
+  "document_title" is the original filename set at creation time — it is NOT
+  AI-determined, so it has no _det suffix.
+  The time-period column carries a "file_" prefix: file_time_period_det.
+
+COMPLETE COLUMN LIST (all VARCHAR):
+  document_title                — original document filename (no _det suffix)
+  file_category_det             — e.g. Link Testing, Brand Health Track
+  file_sub_category_det         — file sub-category
+  product_category_det          — e.g. Household Insecticide, Personal Wash
+  product_sub_category_det      — product sub-category
+  brand_det                     — e.g. Good Knight, Cinthol
+  sub_brand_variant_det         — sub-brand or variant
+  country_det                   — e.g. India, Indonesia
+  region_det                    — region
+  file_time_period_det          — time period
+
+COLUMN USAGE:
+  Use _det columns for both SELECT and WHERE.  Alias them without the suffix:
+    file_category_det AS file_category, brand_det AS brand, ...
+  Use ILIKE for case-insensitive filtering:
+    brand_det ILIKE '%Godrej%'
+  Refer to AVAILABLE COLUMN VALUES in the system prompt for valid values.
+
 EXAMPLE QUERIES:
 -- List all U&A reports
 SELECT DISTINCT
@@ -290,6 +279,7 @@ FROM {_TABLE_NAME}
 WHERE file_category_det ILIKE '%Usage & Attitude%'
 ORDER BY document_title
 LIMIT 200;
+
 -- Count reports by category
 SELECT
     file_category_det AS file_category,
@@ -297,7 +287,8 @@ SELECT
 FROM {_TABLE_NAME}
 GROUP BY file_category
 ORDER BY doc_count DESC;
--- List brand equity reports for a specific brand and region
+
+-- List brand equity reports for a specific brand
 SELECT DISTINCT
     document_title,
     brand_det AS brand,
@@ -316,7 +307,7 @@ LIMIT 200;
 @tool
 def execute_metadata_sql(query: str) -> str:
     """Execute a read-only SQL query against the metadata table and return results as JSON."""
-    # ── Safety checks ──
+    # -- Safety checks --
     normalized = query.strip().upper()
     if not normalized.startswith("SELECT"):
         return json.dumps({"error": "Only SELECT queries are allowed.", "query": query})
@@ -330,7 +321,7 @@ def execute_metadata_sql(query: str) -> str:
     if _TABLE_NAME.lower() not in query.lower():
         return json.dumps({"error": f"Query must target the {_TABLE_NAME} table.", "query": query})
 
-    # ── Execute via the unified query interface ──
+    # -- Execute via the unified query interface --
     try:
         columns, rows, total = _execute_query(query, max_rows=200)
 
@@ -376,7 +367,7 @@ def document_retriever_node(state: PipelineState) -> Dict[str, Any]:
     print(f"  Query: {user_query}")
     print(f"  Enriched: {enriched_query}")
 
-    # ── Build prompt ──
+    # -- Build prompt --
     tools = [execute_metadata_sql]
     tools_map = {"execute_metadata_sql": execute_metadata_sql}
     llm = create_llm()
@@ -391,17 +382,22 @@ Your job is to query the {_TABLE_NAME} table to find and list documents matching
 INSTRUCTIONS:
 1. Analyse the user's query and chat history to understand what documents they want.
 2. Build a SQL query using the execute_metadata_sql tool.
-3. ALWAYS use ONLY the _det columns for both SELECT and WHERE.
+3. Use _det columns for both SELECT and WHERE. Alias them without the suffix for display.
 4. Use ILIKE for case-insensitive matching on categories, brands, etc.
 5. Always SELECT DISTINCT on document_title to avoid duplicates.
 6. Include all relevant metadata columns in SELECT for richer results.
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-AVAILABLE COLUMN VALUES (loaded from database \u2014 use these for accurate filtering)
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+
+NAMING CONVENTION (understand this, don't memorise column names):
+  "_det" columns = AI-determined metadata, classified after upload.
+  "document_title" = original filename from creation time, NOT AI-determined, so no _det.
+  The time-period column is prefixed with "file_": file_time_period_det.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+AVAILABLE COLUMN VALUES (loaded from database — use these for accurate filtering)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """ + column_values_block + f"""
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-RESULT VERIFICATION (CRITICAL \u2014 run after EVERY query that returns rows)
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RESULT VERIFICATION (CRITICAL — run after EVERY query that returns rows)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 After getting results, CHECK whether they actually match ALL the user's
 requested filters. Do NOT blindly accept results.
 VERIFY:
@@ -424,15 +420,15 @@ VERIFY:
      3. Home Care
      Which one did you mean by 'bars'?"
 NEVER silently ignore a filter term that produced no matching results.
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ZERO-RESULTS FALLBACK (CRITICAL)
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 If your first query returns 0 rows, DO NOT give up. The user's terms may not
 match the exact metadata values. Follow this escalation:
-STEP A \u2014 Broaden the failing filter.
+STEP A — Broaden the failing filter.
   Remove the most restrictive filter (usually product_category or brand) and re-query.
   Example: if ILIKE '%Soap%' returned 0, try without the product_category filter.
-STEP B \u2014 Discover available values.
+STEP B — Discover available values.
   Run a discovery query to show the user what values actually exist:
     SELECT DISTINCT product_category_det AS product_category
     FROM {_TABLE_NAME}
@@ -444,7 +440,7 @@ STEP B \u2014 Discover available values.
     FROM {_TABLE_NAME}
     WHERE file_category_det ILIKE '%Link testing%'
     ORDER BY brand;
-STEP C \u2014 Present options to the user.
+STEP C — Present options to the user.
   Format as a clarifying question:
     "I couldn't find link testing reports matching 'Soap'. Here are the available
     product categories for link testing reports:
@@ -457,10 +453,10 @@ IMPORTANT:
 - NEVER return "no results found" without first trying Steps A and B.
 - If discovery also returns 0, THEN say no documents exist for that report type.
 - When presenting options, keep the format conversational and helpful.
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-FORMATTING (only when results are found \u2014 Python handles the actual formatting)
-\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501
-When results ARE found, you can stop \u2014 Python code will format the rows.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+FORMATTING (only when results are found — Python handles the actual formatting)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+When results ARE found, you can stop — Python code will format the rows.
 When results are NOT found and you're asking a clarifying question, write
 the clarifying message as your final text response.
 """),
@@ -473,7 +469,7 @@ the clarifying message as your final text response.
         enriched_query=enriched_query,
     ))
 
-    # ── Tool-calling loop (Step 2D pattern) ──
+    # -- Tool-calling loop (Step 2D pattern) --
     all_new_messages = []
     max_iterations = 5
     response = None
@@ -532,7 +528,7 @@ the clarifying message as your final text response.
             print("  SQL agent finished")
             break
 
-    # ── Determine final response ──
+    # -- Determine final response --
     llm_final_text = (response.content.strip() if response and response.content else "")
 
     if not last_tool_rows:
@@ -548,7 +544,7 @@ the clarifying message as your final text response.
     print(f"\n  Document listing response ({len(final_response)} chars)")
     print(f"   Preview: {final_response[:300]}...")
 
-    # ── Build output for state ──
+    # -- Build output for state --
     listing_output = DocumentListingOutput(
         formatted_response=final_response,
         documents=listed_docs,
