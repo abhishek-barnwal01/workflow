@@ -27,6 +27,7 @@ from utils import safe_utf8, sanitize_any, create_llm, execute_tool_calls
 # ---------------------------------------------------------------------------
 
 _databricks_connection = None
+_INVALID_SESSION_ERRORS = ("INVALID_STATE", "Invalid SessionHandle")
 
 
 def _get_databricks_connection():
@@ -42,6 +43,17 @@ def _get_databricks_connection():
     return _databricks_connection
 
 
+def _reset_databricks_connection():
+    """Close and clear the cached Databricks connection after session expiry."""
+    global _databricks_connection
+    if _databricks_connection is not None:
+        try:
+            _databricks_connection.close()
+        except Exception:
+            pass
+    _databricks_connection = None
+
+
 def _execute_query(query: str, max_rows: int = 200) -> Tuple[List[str], List[Dict[str, Any]], int]:
     """Execute a read-only SQL query against the active backend.
 
@@ -49,17 +61,29 @@ def _execute_query(query: str, max_rows: int = 200) -> Tuple[List[str], List[Dic
     Routes to PostgreSQL or Databricks based on DB_BACKEND config.
     """
     if DB_BACKEND == "databricks":
+        def _run_query(conn):
+            cursor = conn.cursor()
+            try:
+                cursor.execute(query)
+                columns = [desc[0] for desc in cursor.description] if cursor.description else []
+                raw_rows = cursor.fetchmany(max_rows)
+                rows = [dict(zip(columns, row)) for row in raw_rows]
+                total = cursor.rowcount if cursor.rowcount and cursor.rowcount >= 0 else len(rows)
+                return columns, rows, total
+            finally:
+                cursor.close()
+
         conn = _get_databricks_connection()
-        cursor = conn.cursor()
         try:
-            cursor.execute(query)
-            columns = [desc[0] for desc in cursor.description] if cursor.description else []
-            raw_rows = cursor.fetchmany(max_rows)
-            rows = [dict(zip(columns, row)) for row in raw_rows]
-            total = cursor.rowcount if cursor.rowcount and cursor.rowcount >= 0 else len(rows)
-            return columns, rows, total
-        finally:
-            cursor.close()
+            return _run_query(conn)
+        except Exception as exc:
+            message = str(exc)
+            if any(err in message for err in _INVALID_SESSION_ERRORS):
+                print("  Databricks session invalid; refreshing connection and retrying once")
+                _reset_databricks_connection()
+                conn = _get_databricks_connection()
+                return _run_query(conn)
+            raise
     else:
         with pg_pool.connection() as conn:
             with conn.cursor() as cur:
@@ -578,3 +602,4 @@ the clarifying message as your final text response.
         "awaiting_clarification": is_asking_clarification,
         "rag_output": None,
     }
+ 
