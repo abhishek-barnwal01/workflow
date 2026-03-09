@@ -312,19 +312,6 @@ FROM {_TABLE_NAME}
 GROUP BY file_category
 ORDER BY doc_count DESC;
 
--- List brand equity reports for a specific brand
-SELECT DISTINCT
-    document_title,
-    brand_det AS brand,
-    sub_brand_variant_det AS sub_brand_variant,
-    file_time_period_det AS time_period,
-    country_det AS country,
-    region_det AS region
-FROM {_TABLE_NAME}
-WHERE file_category_det ILIKE '%Brand equity%'
-  AND brand_det ILIKE '%Godrej%'
-ORDER BY document_title
-LIMIT 200;
 """
 
 
@@ -406,83 +393,28 @@ Your job is to query the {_TABLE_NAME} table to find and list documents matching
 INSTRUCTIONS:
 1. Analyse the user's query and chat history to understand what documents they want.
 2. Build a SQL query using the execute_metadata_sql tool.
-3. Use _det columns for both SELECT and WHERE. Alias them without the suffix for display.
-4. Use ILIKE for case-insensitive matching on categories, brands, etc.
-5. Always SELECT DISTINCT on document_title to avoid duplicates.
-6. Include all relevant metadata columns in SELECT for richer results.
-
-NAMING CONVENTION (understand this, don't memorise column names):
-  "_det" columns = AI-determined metadata, classified after upload.
-  "document_title" = original filename from creation time, NOT AI-determined, so no _det.
-  The time-period column is prefixed with "file_": file_time_period_det.
+3. Use ILIKE for case-insensitive matching on categories, brands, etc.
+4. Always SELECT DISTINCT on document_title to avoid duplicates.
+5. Include all relevant metadata columns in SELECT for richer results.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 AVAILABLE COLUMN VALUES (loaded from database — use these for accurate filtering)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 """ + column_values_block + f"""
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-RESULT VERIFICATION (CRITICAL — run after EVERY query that returns rows)
+RESULT VERIFICATION & ZERO-RESULTS HANDLING
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-After getting results, CHECK whether they actually match ALL the user's
-requested filters. Do NOT blindly accept results.
-VERIFY:
-1. If user asked for MULTIPLE categories/brands (e.g., "bars and insecticides"),
-   check that results contain BOTH. If results only cover one, the other term
-   likely did not match any real metadata value.
-2. If a filter term is VAGUE or INFORMAL (e.g., "bars", "soaps", "sprays"),
-   check the returned product_category / brand values. If none of them
-   obviously correspond to the vague term, that term is AMBIGUOUS.
-3. For any ambiguous or unmatched term, run a discovery query:
-     SELECT DISTINCT product_category_det AS product_category
-     FROM {_TABLE_NAME}
-     WHERE file_category_det ILIKE '%Link testing%'
-     ORDER BY product_category;
-4. Present the unmatched term + discovered options to the user:
-     "I found results for **insecticides** but couldn't match **'bars'** to a
-     known product category. Available categories include:
-     1. Personal Wash
-     2. Hair Care
-     3. Home Care
-     Which one did you mean by 'bars'?"
-NEVER silently ignore a filter term that produced no matching results.
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-ZERO-RESULTS FALLBACK (CRITICAL)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-If your first query returns 0 rows, DO NOT give up. The user's terms may not
-match the exact metadata values. Follow this escalation:
-STEP A — Broaden the failing filter.
-  Remove the most restrictive filter (usually product_category or brand) and re-query.
-  Example: if ILIKE '%Soap%' returned 0, try without the product_category filter.
-STEP B — Discover available values.
-  Run a discovery query to show the user what values actually exist:
-    SELECT DISTINCT product_category_det AS product_category
-    FROM {_TABLE_NAME}
-    WHERE file_category_det ILIKE '%Link testing%'
-      AND country_det ILIKE '%India%'
-    ORDER BY product_category;
-  Or for brands:
-    SELECT DISTINCT brand_det AS brand
-    FROM {_TABLE_NAME}
-    WHERE file_category_det ILIKE '%Link testing%'
-    ORDER BY brand;
-STEP C — Present options to the user.
-  Format as a clarifying question:
-    "I couldn't find link testing reports matching 'Soap'. Here are the available
-    product categories for link testing reports:
-    1. Personal Wash
-    2. Hair Care
-    3. Home Care
-    Which category would you like to see?"
-IMPORTANT:
-- You have up to 4 tool calls. Use them: initial query -> broaden -> discover -> (optional retry).
-- NEVER return "no results found" without first trying Steps A and B.
-- If discovery also returns 0, THEN say no documents exist for that report type.
-- When presenting options, keep the format conversational and helpful.
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-FORMATTING (only when results are found — Python handles the actual formatting)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-When results ARE found, you can stop — Python code will format the rows.
-When results are NOT found and you're asking a clarifying question, write
-the clarifying message as your final text response.
+After every query, verify results match ALL the user's requested filters.
+- If a filter term returned no matches (vague terms like "bars", "soaps"),
+  run a discovery query: SELECT DISTINCT <column>_det FROM {_TABLE_NAME} WHERE ...
+- Present discovered options to the user. NEVER silently ignore an unmatched filter.
+
+If a query returns 0 rows:
+1. Broaden: remove the most restrictive filter and retry.
+2. Discover: query distinct values for the failing column.
+3. Ask: present available values as a clarifying question.
+NEVER return "no results found" without trying steps 1-2 first. You have up to 4 tool calls.
+
+When results are found, stop. For clarifications, write your question as the final response.
 """),
         MessagesPlaceholder("messages"),
         ("human", "Find documents for: {enriched_query}"),
