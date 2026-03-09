@@ -531,9 +531,16 @@ the clarifying message as your final text response.
     # -- Determine final response --
     llm_final_text = (response.content.strip() if response and response.content else "")
 
-    if not last_tool_rows:
-        # No SQL results — LLM produced either a clarification question or a no-results message
-        print("  Using LLM's clarification/explanation text")
+    # Detect aggregate results (COUNT, GROUP BY, etc.) — rows exist but
+    # contain no document_title, so they aren't listable documents.
+    is_aggregate = (
+        last_tool_rows
+        and "document_title" not in last_tool_rows[0]
+    )
+
+    if not last_tool_rows or is_aggregate:
+        # No document rows — use LLM's text (covers counts, clarifications, etc.)
+        print("  Using LLM's text response (no document rows or aggregate result)")
         final_response = llm_final_text or "No documents found matching your query."
         listed_docs = []
     else:
