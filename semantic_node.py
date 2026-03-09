@@ -156,12 +156,14 @@ Classify into ONE category:
 2. **direct**: Simple general knowledge questions not requiring company documents
    - Examples: "what is GDP", "define market share", "explain EBITDA"
 
-3. **document_listing**: Requests to LIST, COUNT, or SHOW available documents/reports
-   - Examples: "list all U&A reports", "show brand equity reports", "how many link testing reports do we have", "what reports are available for Cinthol", "show all reports for India 2023"
+3. **document_listing**: Requests to LIST, COUNT, or SHOW available documents/reports, OR metadata queries
+   - Examples: "list all U&A reports", "show brand equity reports", "how many link testing reports do we have", "what reports are available for Cinthol", "show all reports for India 2023", "list all distinct values under product_category_det", "what product categories exist", "show me the values in file_category_ai"
    - Characteristics: user wants a LIST of document titles/metadata — NOT content analysis
-   - Trigger words: "list", "show", "how many", "count", "what reports", "which documents", "available documents"
+   - Trigger words: "list", "show", "how many", "count", "what reports", "which documents", "available documents", "distinct values", "what values", "what categories"
    - IMPORTANT: If user asks to LIST or COUNT documents by category, brand, country, or time period → ALWAYS document_listing
-   - Set enriched_query = concise search description for SQL (e.g., "U&A reports India", "brand equity Godrej 2023")
+   - IMPORTANT: If user asks about column values, metadata structure, distinct values, or available categories/brands/products → ALWAYS document_listing (these are SQL queries on the metadata table, NOT content questions)
+   - IMPORTANT: If the previous turn was a document_listing response and the user asks a follow-up about the same topic (e.g. refining filters, asking for correct count, questioning results) → ALWAYS document_listing
+   - Set enriched_query = concise search description for SQL (e.g., "U&A reports India", "brand equity Godrej 2023", "distinct product_category_det values")
    
 4. **semantic_specific**: Specific, targeted questions about CONTENT within documents
    - Examples: "what is Lux market share in Q3", "summarize the GN1 link test", "what does the U&A study say about purchase drivers"
@@ -176,6 +178,8 @@ Classify into ONE category:
 DECISION LOGIC (in order):
 Q0: Asking to LIST, COUNT, or SHOW documents/reports? → document_listing
 Q1: Listing/counting a SPECIFIC KNOWN report type? → document_listing
+Q1b: Asking about metadata, column values, distinct values, or available categories/brands? → document_listing
+Q1c: Follow-up to a previous document_listing response (e.g. refining filters, questioning count, asking "why not checking X")? → document_listing
 Q2: Asking to READ, SUMMARIZE, or ANALYSE content? → semantic_specific
 Q3: Mentions SPECIFIC entities by name for content questions? → semantic_specific
 Q4: EXPLORATORY / GENERIC discovery? → Check Q5
