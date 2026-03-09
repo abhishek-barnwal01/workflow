@@ -92,27 +92,14 @@ _FILTERABLE_COLUMNS = {
     "file_time_period_det": "time_period",
 }
 
-# AI-determined columns — use these when _det columns lack the needed
-# categorisation (e.g. "Link testing" only exists in file_category_ai,
-# not in file_category_det which stores the broader "Communication Testing").
-_AI_COLUMNS = {
-    "file_category_ai": "file_category_ai",
-    "product_category_ai": "product_category_ai",
-    "brand_ai": "brand_ai",
-    "file_time_period_ai": "time_period_ai",
-    "country_ai": "country_ai",
-}
-
 
 def _fetch_distinct_column_values() -> Dict[str, List[str]]:
     """Query the metadata table for distinct values of every filterable
-    column (both _det and _ai).  Returns a dict mapping display names to
-    sorted value lists.  Called once at module load and cached in
-    ``_COLUMN_VALUES``.
+    column.  Returns a dict mapping display names to sorted value lists.
+    Called once at module load and cached in ``_COLUMN_VALUES``.
     """
     result: Dict[str, List[str]] = {}
-    all_columns = {**_FILTERABLE_COLUMNS, **_AI_COLUMNS}
-    for col, display in all_columns.items():
+    for col, display in _FILTERABLE_COLUMNS.items():
         try:
             query = (
                 f"SELECT DISTINCT {col} FROM {_TABLE_NAME} "
@@ -189,21 +176,15 @@ def _format_results(listed_docs: List[Dict[str, Any]]) -> str:
     lines = [f"Here are **{count}** document(s) matching your query:\n"]
 
     # All possible display columns (alias -> human-readable label)
-    # Includes both _det aliases (without suffix) and _ai aliases (with suffix)
     col_checks = [
         ("file_category", "Category"),
-        ("file_category_ai", "Category (AI)"),
         ("file_sub_category", "Sub-Category"),
         ("product_category", "Product"),
-        ("product_category_ai", "Product (AI)"),
         ("product_sub_category", "Product Sub-Category"),
         ("brand", "Brand"),
-        ("brand_ai", "Brand (AI)"),
         ("sub_brand_variant", "Sub-Brand / Variant"),
         ("time_period", "Period"),
-        ("time_period_ai", "Period (AI)"),
         ("country", "Country"),
-        ("country_ai", "Country (AI)"),
         ("region", "Region"),
     ]
 
@@ -262,74 +243,32 @@ RULES:
 - Maximum 200 rows returned.
 
 NAMING CONVENTION:
-  Two column families exist:
-  1. "_det" columns = deterministic / user-classified metadata.
-  2. "_ai" columns  = AI-determined metadata (classified after upload).
-  IMPORTANT: The two families often have DIFFERENT values for the same document.
-  For example a document may have file_category_det = 'Communication Testing'
-  but file_category_ai = 'Link testing'.  Always check AVAILABLE COLUMN VALUES
-  below to decide which column to filter on.
-  "document_title" is the original filename — no suffix.
+  Columns suffixed with "_det" hold AI-determined metadata (classified after upload).
+  "document_title" is the original filename set at creation time — it is NOT
+  AI-determined, so it has no _det suffix.
+  The time-period column carries a "file_" prefix: file_time_period_det.
 
 COMPLETE COLUMN LIST (all VARCHAR):
-  document_title                — original document filename (no suffix)
-  --- deterministic (_det) columns ---
-  file_category_det             — e.g. Communication Testing, Brand Health Track
-  file_sub_category_det         — e.g. Quartely reports, Ad Hoc, Brand Equity
-  product_category_det          — e.g. Home Care, Personal Wash, Soaps
+  document_title                — original document filename (no _det suffix)
+  file_category_det             — e.g. Link Testing, Brand Health Track
+  file_sub_category_det         — file sub-category
+  product_category_det          — e.g. Household Insecticide, Personal Wash
   product_sub_category_det      — product sub-category
   brand_det                     — e.g. Good Knight, Cinthol
   sub_brand_variant_det         — sub-brand or variant
   country_det                   — e.g. India, Indonesia
   region_det                    — region
   file_time_period_det          — time period
-  --- AI-determined (_ai) columns ---
-  file_category_ai              — e.g. Link testing, Brand Health track, Usage/Attitude (U&A)
-  product_category_ai           — e.g. Household Insecticides, Soaps
-  brand_ai                      — e.g. Good Knight, Cinthol
-  file_time_period_ai           — time period (AI)
-  country_ai                    — country (AI)
-
-CROSS-REFERENCING GUIDANCE:
-  Some categories exist ONLY in _ai columns:
-    - "Link testing" → file_category_ai (NOT in file_category_det; those docs have
-      file_category_det = 'Communication Testing')
-  Some categories exist ONLY in _det columns:
-    - "Quartely reports" → file_sub_category_det (note the typo in the data)
-  When a user term does not match any _det value, TRY the corresponding _ai column.
-  When filtering, prefer _det columns first; fall back to _ai columns if _det has
-  no matching value.
 
 COLUMN USAGE:
   Use _det columns for both SELECT and WHERE.  Alias them without the suffix:
     file_category_det AS file_category, brand_det AS brand, ...
-  For _ai columns keep the _ai suffix in the alias for clarity:
-    file_category_ai AS file_category_ai
   Use ILIKE for case-insensitive filtering:
     brand_det ILIKE '%Godrej%'
   Refer to AVAILABLE COLUMN VALUES in the system prompt for valid values.
 
 EXAMPLE QUERIES:
--- List all Link testing reports (uses _ai column because _det has no "Link testing")
-SELECT DISTINCT
-    document_title,
-    file_category_ai,
-    product_category_det AS product_category,
-    brand_det AS brand,
-    file_time_period_det AS time_period,
-    country_det AS country,
-    region_det AS region
-FROM {_TABLE_NAME}
-WHERE file_category_ai ILIKE '%Link testing%'
-ORDER BY document_title
-LIMIT 200;
-
--- Count Link testing reports
-SELECT COUNT(DISTINCT document_title) AS doc_count
-FROM {_TABLE_NAME}
-WHERE file_category_ai ILIKE '%Link testing%';
-
--- List all U&A reports (exists in _det as 'Usage and Attitude')
+-- List all U&A reports
 SELECT DISTINCT
     document_title,
     file_category_det AS file_category,
@@ -337,7 +276,7 @@ SELECT DISTINCT
     file_time_period_det AS time_period,
     country_det AS country
 FROM {_TABLE_NAME}
-WHERE file_category_det ILIKE '%Usage and Attitude%'
+WHERE file_category_det ILIKE '%Usage & Attitude%'
 ORDER BY document_title
 LIMIT 200;
 
@@ -348,27 +287,6 @@ SELECT
 FROM {_TABLE_NAME}
 GROUP BY file_category
 ORDER BY doc_count DESC;
-
--- List quarterly reports for a product category
-SELECT DISTINCT
-    document_title,
-    file_category_det AS file_category,
-    file_sub_category_det AS file_sub_category,
-    product_category_det AS product_category,
-    brand_det AS brand,
-    file_time_period_det AS time_period,
-    country_det AS country
-FROM {_TABLE_NAME}
-WHERE file_sub_category_det ILIKE '%Quarte%'
-  AND product_category_det ILIKE '%Soaps%'
-ORDER BY document_title
-LIMIT 200;
-
--- List distinct values for a column
-SELECT DISTINCT product_category_det AS product_category
-FROM {_TABLE_NAME}
-WHERE product_category_det IS NOT NULL AND product_category_det != ''
-ORDER BY product_category;
 
 -- List brand equity reports for a specific brand
 SELECT DISTINCT
@@ -464,22 +382,15 @@ Your job is to query the {_TABLE_NAME} table to find and list documents matching
 INSTRUCTIONS:
 1. Analyse the user's query and chat history to understand what documents they want.
 2. Build a SQL query using the execute_metadata_sql tool.
-3. Prefer _det columns for SELECT and WHERE. If the user's term does NOT match any
-   _det value (check AVAILABLE COLUMN VALUES below), use the corresponding _ai column.
-   CRITICAL EXAMPLE: "Link testing" → use file_category_ai (not file_category_det which
-   stores the broader "Communication Testing" for those same documents).
+3. Use _det columns for both SELECT and WHERE. Alias them without the suffix for display.
 4. Use ILIKE for case-insensitive matching on categories, brands, etc.
 5. Always SELECT DISTINCT on document_title to avoid duplicates.
 6. Include all relevant metadata columns in SELECT for richer results.
-7. For COUNT queries, return the count — do NOT list all documents.
-8. For "list distinct values" queries, use SELECT DISTINCT on the requested column.
 
-NAMING CONVENTION:
-  Two column families exist in the table:
-  - "_det" columns = deterministic / user-classified metadata.
-  - "_ai" columns  = AI-determined metadata (may differ from _det for the same doc).
-  "document_title" = original filename, no suffix.
-  The time-period column is prefixed with "file_": file_time_period_det / file_time_period_ai.
+NAMING CONVENTION (understand this, don't memorise column names):
+  "_det" columns = AI-determined metadata, classified after upload.
+  "document_title" = original filename from creation time, NOT AI-determined, so no _det.
+  The time-period column is prefixed with "file_": file_time_period_det.
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 AVAILABLE COLUMN VALUES (loaded from database — use these for accurate filtering)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
