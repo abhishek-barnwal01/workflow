@@ -112,9 +112,14 @@ def build_graph():
         },
     )
 
-    # builder.add_edge("rag", "evaluator")
-    # builder.add_edge("evaluator", "formatter")
-    builder.add_edge("rag", "formatter")
+    # Formatter only runs when RAG detects a chart/graph request (needs_formatter=True).
+    # All other RAG answers stream directly to the client without a formatter LLM call.
+    def rag_router(state: PipelineState):
+        if getattr(state, "needs_formatter", False):
+            return "formatter"
+        return END
+
+    builder.add_conditional_edges("rag", rag_router, {"formatter": "formatter", END: END})
     builder.add_edge("formatter", END)
 
     # Document retriever goes directly to END (inline formatting, no formatter needed)

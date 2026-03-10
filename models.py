@@ -159,8 +159,8 @@ class PipelineState(BaseModel):
     task_type: Optional[str] = None           # "summarization" | "listing" | "content_search" | "other"
     document_category: Optional[str] = None   # e.g. "Link Test", "U&A" – used to pre-load schema
 
-    # When True, formatter_node skips its LLM call; app.py streams the formatter directly.
-    skip_formatter: bool = False
+    # Set by rag_node when the query asks for a chart/graph; routes to formatter_node.
+    needs_formatter: bool = False
     
     # Document listing output — set by document_retriever_node for listing queries.
     # Preserved in state so subsequent queries can reference the listed documents.

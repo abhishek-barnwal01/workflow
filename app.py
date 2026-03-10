@@ -19,8 +19,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.messages import HumanMessage, AIMessage
 
 from graph import build_graph
-from formatter_node import build_formatter_prompt
-from utils import create_llm
 
 
 # ---------- Build LangGraph Flow (sync, runs once at startup) ----------
@@ -271,99 +269,101 @@ def _sse_chunk(chunk_id: str, created_time: int, model: str, *, delta: dict, fin
 # ---------- Streaming generator for LibreChat ----------
 async def generate_stream(user_query, langchain_messages, user_id, session_id, model):
     """
-    Two-phase streaming:
-      Phase 1 — Run the graph with skip_formatter=True (RAG + semantic nodes,
-                 no formatter LLM call). Graph finishes fast; formatter is skipped.
-      Phase 2 — Stream the formatter LLM token-by-token via llm.astream().
-                 Tokens are piped directly to SSE so the client sees text appear
-                 progressively rather than waiting for the full response.
+    Real-time streaming via graph.astream_events():
 
-    Short responses (chitchat, clarification questions) skip Phase 2 and are
-    sent as a single chunk since they require no formatting.
+    • RAG synthesis tokens stream live the moment they are produced —
+      the user sees the answer building word-by-word instead of waiting
+      for the full graph to finish.
+    • If the query asks for a chart/graph, formatter tokens continue in
+      the same SSE stream right after the RAG answer finishes.
+    • SAS tokens are appended line-by-line (buffer-flush on \n) so URLs
+      are always complete when they reach the client.
+    • Non-RAG paths (chitchat, clarification, document listing) are
+      collected from the final graph state and sent as a single chunk.
     """
     chunk_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created_time = int(time.time())
 
+    input_data = {
+        "user_query": user_query,
+        "messages": langchain_messages,
+        "user_id": user_id,
+    }
+    config = {"configurable": {"thread_id": session_id}}
+
+    rag_started = False   # True once we've sent the first RAG/formatter token
+    buffer = ""           # Accumulates tokens until a newline for SAS replacement
+
     try:
-        # ── Phase 1: run graph, skip formatter ──────────────────────────────
-        result = await asyncio.to_thread(
-            graph.invoke,
-            {"user_query": user_query, "messages": langchain_messages, "user_id": user_id,
-             "skip_formatter": True},
-            config={"configurable": {"thread_id": session_id}},
-        )
+        async for event in graph.astream_events(input_data, config=config, version="v2"):
+            if event["event"] != "on_chat_model_stream":
+                continue
 
-        print(f"\n🔍 DEBUG generate_stream result keys: {list(result.keys())}")
-        print(f"📌 clarification_message: {result.get('clarification_message')}")
-        print(f"📌 semantic_chitchat: {result.get('semantic_chitchat')}")
+            node = event.get("metadata", {}).get("langgraph_node", "")
+            if node not in ("rag", "formatter"):
+                continue
 
-        semantic_chitchat: bool = result.get("semantic_chitchat", False)
-        clarification_msg: str = result.get("clarification_message") or ""
-        awaiting_clarification: bool = result.get("awaiting_clarification", False)
+            chunk = event["data"]["chunk"]
+            token: str = chunk.content if hasattr(chunk, "content") else ""
+            if not isinstance(token, str) or not token:
+                continue
 
-        rag_output = result.get("rag_output") or {}
-        rag_answer: str = (
-            rag_output.get("final_answer", "") if isinstance(rag_output, dict)
-            else getattr(rag_output, "final_answer", "")
-        )
+            if not rag_started:
+                yield _sse_chunk(chunk_id, created_time, model, delta={"role": "assistant"})
+                rag_started = True
 
-        evaluation = result.get("evaluation") or {}
-        confidence: float = (
-            evaluation.get("confidence_score", 0.8) if isinstance(evaluation, dict)
-            else getattr(evaluation, "confidence_score", 0.8)
-        )
+            buffer += token
+            # Flush every complete line with SAS URLs applied
+            lines = buffer.split("\n")
+            for line in lines[:-1]:
+                yield _sse_chunk(chunk_id, created_time, model,
+                                 delta={"content": append_sas_to_blob_urls(line + "\n")})
+            buffer = lines[-1]   # keep the incomplete trailing fragment
 
-        # ── Determine content to format ──────────────────────────────────────
-        # Chitchat, clarification questions, and document listings need no formatting — send as-is.
-        doc_listing = result.get("document_listing_output") or {}
+        # Flush remaining buffer (last line without trailing \n)
+        if buffer:
+            yield _sse_chunk(chunk_id, created_time, model,
+                             delta={"content": append_sas_to_blob_urls(buffer)})
+
+        if rag_started:
+            yield _sse_chunk(chunk_id, created_time, model, delta={}, finish_reason="stop")
+            yield "data: [DONE]\n\n"
+            return
+
+        # ── Non-RAG path: chitchat / clarification / document listing ────────
+        # No RAG tokens were streamed — get the final state and send as one chunk.
+        final = await graph.aget_state(config)
+        state = final.values if final else {}
+
+        doc_listing = state.get("document_listing_output") or {}
         doc_listing_response: str = (
             doc_listing.get("formatted_response", "") if isinstance(doc_listing, dict)
             else getattr(doc_listing, "formatted_response", "")
         )
-
-        if semantic_chitchat or (clarification_msg and awaiting_clarification) or (doc_listing_response and not rag_answer):
-            print("📄 Streaming chitchat/clarification/listing directly (no formatter)")
-            # Chitchat / clarification take priority; doc_listing is fallback only
-            # when neither is active (prevents stale listing from prior turns).
-            if semantic_chitchat or (clarification_msg and awaiting_clarification):
-                final_response = clarification_msg
-            else:
-                final_response = doc_listing_response or clarification_msg
-            final_response = append_sas_to_blob_urls(final_response)
-            yield _sse_chunk(chunk_id, created_time, model, delta={"role": "assistant"})
-            yield _sse_chunk(chunk_id, created_time, model, delta={"content": final_response})
-            yield _sse_chunk(chunk_id, created_time, model, delta={}, finish_reason="stop")
-            yield "data: [DONE]\n\n"
-            return
-
-        # Direct answer from semantic node (e.g. answered from history) or RAG answer.
-        text_to_format = (
-            clarification_msg if (clarification_msg and not awaiting_clarification)
-            else rag_answer
+        clarification_msg: str = state.get("clarification_message") or ""
+        awaiting_clarification: bool = state.get("awaiting_clarification", False)
+        semantic_chitchat: bool = state.get("semantic_chitchat", False)
+        rag_out = state.get("rag_output") or {}
+        rag_answer: str = (
+            rag_out.get("final_answer", "") if isinstance(rag_out, dict)
+            else getattr(rag_out, "final_answer", "")
         )
-        if not text_to_format:
-            print("⚠️ No content to format")
-            yield _sse_chunk(chunk_id, created_time, model, delta={"role": "assistant"})
-            yield _sse_chunk(chunk_id, created_time, model, delta={}, finish_reason="stop")
-            yield "data: [DONE]\n\n"
-            return
 
-        # Ensure any blob links in the raw text already carry SAS before formatting
-        text_to_format = append_sas_to_blob_urls(text_to_format)
+        # Priority (mirrors old generate_stream logic):
+        # 1. chitchat / clarification — always wins, prevents stale listing bleed-through
+        # 2. document listing (only current-turn — rag_answer empty = listing is the answer)
+        # 3. rag answer or direct semantic answer
+        if semantic_chitchat or (clarification_msg and awaiting_clarification):
+            final_response = clarification_msg
+        elif doc_listing_response and not rag_answer:
+            final_response = doc_listing_response
+        else:
+            final_response = clarification_msg or rag_answer
 
-        # ── Phase 2: stream formatter LLM token-by-token ─────────────────────
-        print(f"📄 Streaming formatter output ({len(text_to_format)} chars to format)")
-        prompt = build_formatter_prompt(user_query, text_to_format, confidence)
-        llm = create_llm()
-
-        # CRITICAL: send role first — LibreChat needs this for markdown rendering
+        print(f"\n📄 Non-RAG response ({len(final_response)} chars) — sending as single chunk")
+        final_response = append_sas_to_blob_urls(final_response)
         yield _sse_chunk(chunk_id, created_time, model, delta={"role": "assistant"})
-
-        async for chunk in llm.astream(prompt):
-            token: str = chunk.content if hasattr(chunk, "content") else str(chunk)
-            if token:
-                yield _sse_chunk(chunk_id, created_time, model, delta={"content": token})
-
+        yield _sse_chunk(chunk_id, created_time, model, delta={"content": final_response})
         yield _sse_chunk(chunk_id, created_time, model, delta={}, finish_reason="stop")
         yield "data: [DONE]\n\n"
 
@@ -373,12 +373,9 @@ async def generate_stream(user_query, langchain_messages, user_id, session_id, m
 
         yield _sse_chunk(chunk_id, created_time, model, delta={"role": "assistant"})
 
-        # Sanitize error message — never echo filter-related keywords back into
-        # chat history (they would trigger Azure's content filter on every
-        # subsequent request, creating a self-perpetuating loop).
         raw_err = str(e).lower()
         if any(kw in raw_err for kw in ("jailbreak", "content_filter", "content filter", "responsibleai")):
-            safe_error = "I wasn't able to format that response due to a content policy check. Please try rephrasing your question."
+            safe_error = "I wasn't able to process that response due to a content policy check. Please try rephrasing."
         else:
             safe_error = "Something went wrong while processing your request. Please try again."
 

@@ -245,26 +245,17 @@ Your response should include:
 # ----------------- Node -----------------
 def formatter_node(state: PipelineState) -> Dict[str, Any]:
     """
-    Formatter Node:
-    - Receives RAG final answer + confidence score
-    - Polishes the answer to make it user-friendly
-    - Outputs structured FormatterOutput
+    Formatter Node — only runs when rag_node sets needs_formatter=True.
+    Triggered when the user explicitly requests charts or graphs.
 
-    When state.skip_formatter is True (streaming path), skips the LLM call
-    entirely — app.py streams the formatter directly via llm.astream().
+    Uses plain llm.invoke() (not with_structured_output) so tokens are
+    emitted as content chunks and captured by graph.astream_events(),
+    letting chart code stream live to the client right after the RAG answer.
     """
 
     print("\n" + "="*70)
     print("✨ FORMATTER NODE")
     print("="*70)
-
-    # ✅ Streaming path: app.py will call the formatter LLM directly via astream().
-    if state.skip_formatter:
-        print("⏭️  FORMATTER NODE: skipping LLM call — streaming path will format directly")
-        return {
-            "messages": sanitize_any(state.messages),
-            "formatted": sanitize_any({"formatted_response": "", "metadata": {"source": "streamed"}}),
-        }
 
     user_query = state.user_query
     rag_final_answer = state.rag_output.final_answer if state.rag_output else ""
@@ -309,32 +300,30 @@ def formatter_node(state: PipelineState) -> Dict[str, Any]:
 
     prompt = build_formatter_prompt(user_query, rag_final_answer, confidence)
 
-    # Invoke LLM with retry logic for jailbreak detection
+    # Plain invoke (not with_structured_output) so tokens are emitted as
+    # content chunks and captured by graph.astream_events() for live streaming.
     max_retries = 2
+    formatted_text = ""
     for attempt in range(max_retries):
         try:
-            llm_structured = create_llm().with_structured_output(FormatterOutput, method="function_calling")
-            output: FormatterOutput = llm_structured.invoke(prompt)
-            print(f"\n✅ Formatted response ({len(output.formatted_response)} chars)")
+            response = create_llm().invoke(prompt)
+            formatted_text = response.content if hasattr(response, "content") else str(response)
+            print(f"\n✅ Formatted response ({len(formatted_text)} chars)")
             break
         except Exception as e:
             error_msg = str(e).lower()
             if "jailbreak" in error_msg or "content filter" in error_msg or "content_filter" in error_msg or "responsibleai" in error_msg or "400" in error_msg:
                 print(f"\n⚠️ Azure filter triggered (attempt {attempt + 1}/{max_retries})")
                 if attempt < max_retries - 1:
-                    print(f"   Retrying with adjusted prompt...")
                     import time
                     time.sleep(1)
                     continue
                 else:
-                    print(f"   Using fallback formatter")
-                    output = FormatterOutput(
-                        formatted_response=f"## Answer\n\n{rag_final_answer}\n\n### Sources\nRefer to original documents.",
-                        metadata={"fallback": True, "reason": "jailbreak_filter"}
-                    )
+                    formatted_text = f"## Answer\n\n{rag_final_answer}\n\n### Sources\nRefer to original documents."
                     break
             else:
                 raise
+    output = FormatterOutput(formatted_response=formatted_text, metadata={"source": "formatter"})
 
     # ----------------- Return -----------------
     return {

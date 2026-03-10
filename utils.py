@@ -99,6 +99,7 @@ def create_llm(timeout: float = 120.0, max_retries: int = 2) -> AzureChatOpenAI:
                 temperature=1,
                 timeout=timeout,
                 max_retries=max_retries,
+                streaming=True,
             )
         return _DEFAULT_LLM
 

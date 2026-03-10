@@ -20,6 +20,18 @@ with open(_SCHEMAS_PATH) as _f:
     _SUMMARIZATION_SCHEMAS: dict = json.load(_f)
 
 
+
+# Keywords that signal the user wants a chart or graph — routes to formatter_node.
+_CHART_KEYWORDS = frozenset({
+    'chart', 'graph', 'plot', 'visualize', 'visualise', 'visualization', 'visualisation',
+    'bar chart', 'pie chart', 'bar graph', 'line graph', 'line chart', 'trend chart',
+    'draw', 'diagram', 'mermaid',
+})
+
+def _wants_chart(query: str) -> bool:
+    q = query.lower()
+    return any(kw in q for kw in _CHART_KEYWORDS)
+
 @tool
 def get_summarization_schema(file_category_ai: str) -> str:
     """
@@ -39,8 +51,9 @@ def get_summarization_schema(file_category_ai: str) -> str:
        - filter: file_category_ai eq '<value>' and text_document_id ne ''
        - selectFields: "content_text,document_title,content_path,locationMetadata"
        - paginate: top_k=100, skip as needed (max 4 calls)
-    4) Fill every slot from retrieved text. Set null for missing fields. Do not fabricate.
-    5) Return the filled schema as final_answer (pure JSON). Do NOT add narrative.
+    4) Use the slots and section_hints to guide retrieval and organise your answer.
+    5) Write the final answer as a business report in Markdown — prose paragraphs, section
+       headings, bullet lists, and tables. Do NOT output raw JSON.
 
     Examples:
     - get_summarization_schema("U&A")
@@ -208,8 +221,11 @@ def rag_node(state: PipelineState, config: RunnableConfig = None) -> Dict[str, A
                 schema_injection = (
                     f"SUMMARIZATION SCHEMA (pre-loaded for \"{document_category}\"):\n"
                     f"{schema_result}\n\n"
-                    f"Use these slots and section_hints to structure your retrieval and answer. "
-                    f"Call azure_ai_search now to retrieve the document content."
+                    f"Use these slots and section_hints to structure your retrieval and answer.\n"
+                    f"Retrieve the document content using this exact approach:\n"
+                    f"  filter: document_title eq '<exact filename from user query>' and text_document_id ne ''\n"
+                    f"  top_k: 100\n"
+                    f"  select_fields: content_text,document_title,content_path,locationMetadata\n"
                 )
                 print(f"✅ Pre-loaded schema for '{document_category}'")
             else:
@@ -242,22 +258,35 @@ def rag_node(state: PipelineState, config: RunnableConfig = None) -> Dict[str, A
     # Focused RAG prompt - tool description handles "how to use the tool"
     prompt_text = """You are a RAG retrieval and analysis agent. Use the azure_ai_search tool to find documents, then synthesize professional answers with citations.
 
+⚠️  YOUR CURRENT TASK — answer ONLY this question:
+"{enriched_query}"
+
+The conversation history below is BACKGROUND CONTEXT only.
+You are NOT answering any earlier question from history — answer ONLY the question above.
+Do NOT copy or re-use any prior AI response from the conversation history as your answer.
+
 ---
 PREVIOUSLY RETRIEVED DOCUMENTS:
 ---
 {memories_text}
 
 ---
-PHASE 0: CHECK HISTORY FIRST (MANDATORY)
+PHASE 0: REPEAT-QUESTION SHORTCUT (before any tool call only)
 ---
-BEFORE searching, check if answer already exists:
+SKIP search ONLY when the user repeats the exact same question from the immediately
+preceding exchange and you already answered it.
 
-SKIP SEARCH IF: query identical to last few messages | answer in recent history | follow-up on same docs/topic
-DO SEARCH IF: different topic/entity | no relevant history | user asks for "updated" info
+NEVER SKIP when the current question differs in any way from the last question —
+even if the topic is similar. Always search for fresh content.
 
-IF SKIPPING:
-  → Start: "Based on our previous discussion..." or "As I just mentioned..."
-  → retrieved_docs: [] | total_searches: 0 | reasoning: "Used previous [reason]"
+⚠️  SYNTHESIS RULE: Once you have made any tool call and received results,
+your final answer MUST be composed from those tool results only.
+Never fall back to a prior AI response in the conversation history.
+Conversation history is context — it is never the answer to the current query.
+
+IF SKIPPING (exact repeat only):
+  → Start: "As I just mentioned..." then restate the answer
+  → retrieved_docs: [] | total_searches: 0
 ---
 
 STEP 1: Assess Query Scope
@@ -272,6 +301,14 @@ Search Strategy Guidelines:
 - Look for high-scoring documents
 - For broad exploratory search: use general terms
 - For targeted retrieval: use focused terms after identifying relevant sources
+- ALWAYS do at least 2 searches for broad/multi-dimensional queries. First search = broad terms; follow-up searches = varied terms, different filters, or segment-level keywords to gather comprehensive coverage.
+- If conclusive results are not found, formulate queries as KEYWORD EXPANSIONS, not natural-language phrases
+- NEVER stop at one search if the first results are partial or older-period data. Try alternate
+  phrasings: e.g. if "Lux brand growth" returns only India 2019 data, follow up with
+  `"Lux" growth share sales market performance`, "Lux market share segment".
+- Reason: Azure AI Search ranks on keyword overlap. Multi-keyword queries match docs that
+  use "sales", "penetration", "volume", "gains", "decline", etc. — not just those containing
+  the exact phrase. More keywords = broader recall.
 
 CRITICAL: selectFields USAGE
 - When LISTING documents (names, links, counts): use selectFields: "document_title,content_path"
@@ -294,29 +331,17 @@ CRITICAL RULES:
 
 RETRIEVAL STRATEGY — Pick the right approach for each query type:
 
-1. LISTING/COUNTING ("List all X", "How many X"):
-   → Use facets in ONE call. Never loop per document.
-   → Include ALL documents from facets in your response — do NOT filter or subset them.
-   → When listing documents with content_path, ALWAYS add "and text_document_id ne ''" to filter. Without this filter, you may get image paths instead of PDF paths. DO NOT return image paths when user is asking for documents.
-    Examples:
-    - Wrong: "file_category_ai eq 'Brand equity'" → Returns image paths ❌
-    - Right: "file_category_ai eq 'Brand equity' and text_document_id ne ''" → Returns PDF paths ✅
-   → STOP IMMEDIATELY after this one call. Do NOT paginate (no skip calls). Do NOT search for individual documents.
-   → Use the "document_list" array directly to build your answer — it already has all unique document names and their URLs.
-   → Include ALL documents from the document_list — do NOT filter or subset them.
-
-2. CONTENT SEARCH ("What does X say about Y", "Find insights on Z"):
+1. CONTENT SEARCH ("What does X say about Y", "Find insights on Z"):
    → Use keyword search with top_k=10-50. No facets needed.
    → Include content_text in select_fields if you need to read the text.
 
-3. PAGE-SPECIFIC ("What's on page 6 of Report.pdf"):
+2. PAGE-SPECIFIC ("What's on page 6 of Report.pdf"):
    → Use filter with locationMetadata/pageNumber.
 
-4. SUMMARIZATION ("Summarize document X", "Summarize these documents", "Summarize observations in document X", "Summarize section in X"):
+3. SUMMARIZATION ("Summarize document X", "Summarize these documents", "Summarize observations in document X", "Summarize section in X"):
    → Identify file category(file_category_ai) from user query or memory (use azure_ai_search with selectFields to find it when unknown).
    → Call get_summarization_schema(file_category_ai) to get slots + section_hints; use them to target retrieval.
-   → Check totalCount. If <= 300: paginate to read all (skip=100, skip=200).
-  → If > 300: sample middle (skip=totalCount/2, top_k=100) and end (skip=totalCount-100, top_k=100). Max 4 calls total.
+   → Then call azure_ai_search with "query="*", index_type="main_data", top_k=100, filter="document_title eq 'Report.pdf'", select_fields="content_text,document_title,content_path,locationMetadata" to retrieve relevant chunks.
    → Compose a business report style answer using the slots and section_hints:
         - For each section, write in a business report style. Avoid single-line slot responses.
         - Include quantitative tables where applicable (e.g., metrics vs norms).
@@ -327,6 +352,8 @@ RETRIEVAL STRATEGY — Pick the right approach for each query type:
         - DO NOT merge.
 
 SYNTHESIS RULES:
+- Answer the CURRENT enriched_query. Never answer an older question from the conversation history.
+- If tool calls were made this turn, base your answer ENTIRELY on those tool results — do not use any prior AI response as your answer.
 - Executive Summary (2-3 sentences), then Detailed Analysis with inline citations, then Key Takeaways (3-5 bullets).
 - Use business report formatting: clear section headings, bullet lists, and tables for numeric comparisons.
 - Avoid terse one-liners; provide explanatory sentences grounded in retrieved evidence.
@@ -335,7 +362,6 @@ SYNTHESIS RULES:
 - Evidence-based claims only — do not fabricate information.
 
 CRITICAL:
-- For listing queries, retrieved_docs MUST contain ALL documents found (e.g., if facets return 36 documents, include all 36).
 - Include page numbers in every citation from locationMetadata/pageNumber.
 - Use content_path from search results for links — NEVER reconstruct URLs.
 """
@@ -356,9 +382,19 @@ CRITICAL:
 
     # Inject schema context as the last message before the loop so it is
     # the most-recent context the model sees — impossible to overlook.
+    from langchain_core.messages import SystemMessage as _SM
     if schema_injection:
-        from langchain_core.messages import SystemMessage as _SM
         agent_messages.append(_SM(content=schema_injection))
+
+    # Always pin the current task as the very last message so the LLM
+    # cannot drift to answering an earlier question from the history window.
+    agent_messages.append(_SM(
+        content=(
+            f"REMINDER — you are answering ONLY this question:\n"
+            f"\"{enriched_query}\"\n"
+            f"Do NOT answer any prior question from the conversation history."
+        )
+    ))
 
     all_new_messages = []
     max_iterations = 10
@@ -506,12 +542,12 @@ CRITICAL:
     )
     
     # DEBUG: Print structured output before returning
-    print("\n" + "-"*70)
-    print("🐛 DEBUG: RAG NODE - Structured Output")
-    print("-"*70)
-    print(f"Output Type: {type(output)}")
-    print(f"Output Dict:\n{json.dumps(output.dict(), indent=2, default=str)}")
-    print("-"*70)
+    # print("\n" + "-"*70)
+    # print("🐛 DEBUG: RAG NODE - Structured Output")
+    # print("-"*70)
+    # print(f"Output Type: {type(output)}")
+    # print(f"Output Dict:\n{json.dumps(output.dict(), indent=2, default=str)}")
+    # print("-"*70)
     if output.retrieved_docs:
         # Batch-write all docs in parallel using a thread pool.
         # Each store.put() is an independent DB round-trip; parallelising removes
@@ -544,7 +580,11 @@ CRITICAL:
         print(f"📚 Stored {len(output.retrieved_docs)} RAG docs to PostgresStore (parallel)")
 
 
+    needs_formatter = _wants_chart(user_query) or _wants_chart(enriched_query or "")
+    print(f"📊 needs_formatter: {needs_formatter}")
+
     return {
         "messages": sanitize_any(all_new_messages),
         "rag_output": sanitize_any(output.dict()),
+        "needs_formatter": needs_formatter,
     }
