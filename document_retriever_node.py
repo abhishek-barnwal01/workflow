@@ -265,7 +265,7 @@ def _format_results(listed_docs: List[Dict[str, Any]]) -> str:
     if active_cols and count >= 3:
         # --- Table format for 3+ results with metadata ---
         header    = "| # | Document | " + " | ".join(lbl for _, lbl in active_cols) + " |"
-        separator = "|:---:|:---|" + "|".join(":---|" for _ in active_cols)
+        separator = "|:---:|:---|" + "".join(":---|" for _ in active_cols)
         lines.append(header)
         lines.append(separator)
 
