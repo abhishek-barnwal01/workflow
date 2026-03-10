@@ -197,8 +197,26 @@ def _clean_value(val: Any) -> str:
     return s
 
 
+def _normalize_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Normalize row keys so _det-suffixed columns are also accessible by their alias.
+    e.g. file_category_det -> also stored as file_category, brand_det -> brand.
+    This handles LLM queries that omit AS aliases in the SELECT clause.
+    """
+    normalized = []
+    for row in rows:
+        new_row = dict(row)
+        for k, v in row.items():
+            if k.endswith("_det"):
+                alias = k[:-4]  # drop _det suffix
+                if alias not in new_row:
+                    new_row[alias] = v
+        normalized.append(new_row)
+    return normalized
+
+
 def _format_results(listed_docs: List[Dict[str, Any]]) -> str:
     """Format document rows into clean, readable markdown output."""
+    listed_docs = _normalize_rows(listed_docs)
     if not listed_docs:
         return (
             "No documents were found matching your request.\n\n"
