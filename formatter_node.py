@@ -11,6 +11,103 @@ from utils import safe_utf8, sanitize_any, create_llm
 # app.py generate_stream (streaming). Single source of truth.
 # ---------------------------------------------------------------------------
 
+def build_chart_only_prompt(user_query: str, rag_answer: str, enriched_query: str = "") -> str:
+    """
+    Prompt for the RAG → formatter path.
+    The RAG answer was already streamed live to the user.
+    Formatter must analyse the user's intent and output ONLY 1-2 focused chart(s).
+    """
+    enriched_section = f'\nEnriched/interpreted query: "{enriched_query}"' if enriched_query else ""
+    return f"""You are a chart generator for an enterprise RAG system.
+
+The user asked: "{user_query}"{enriched_section}
+
+The following answer has ALREADY been displayed to the user word-by-word:
+---
+{rag_answer}
+---
+
+TASK: Analyse what the user is asking to visualise, then generate ONLY the charts that best answer their specific request.
+
+STEP 1 — UNDERSTAND THE USER'S INTENT:
+Think carefully:
+- What specific data or metric did the user ask to chart?
+- Are they asking for a comparison (e.g. across edits/brands/periods), a summary of key KPIs, a trend over time, or a distribution?
+- Identify the single most important dataset in the RAG answer that directly answers the user's visualisation request.
+- Do NOT chart every numeric value in the answer. Select only the data most relevant to the user's intent.
+
+STEP 2 — GENERATE FOCUSED CHART:
+- If the user asked for a summary → chart the top-level KPI comparison (the one headline metric that summarises the answer).
+- If the user asked for a specific metric → chart only that metric.
+- If two complementary views are genuinely needed (e.g. raw scores + percentiles), output 2 charts; otherwise output 1.
+- Each chart must be self-contained and directly answer the user's question.
+
+OUTPUT RULES:
+- Do NOT repeat, reformat, or summarise any text from the answer.
+- Do NOT add headers, bullets, explanations, or prose — charts only.
+- Output each chart wrapped in the artifact block below.
+- If there is genuinely no numeric data relevant to the user's request, output nothing at all.
+
+CHART FORMAT:
+• Labels with spaces or special characters MUST use quotes: ["Label with spaces"]
+• Avoid special chars like %, +, &, $ in labels (use words instead: "16.6% growth" → ["16.6 percent growth"])
+• Use --> for arrows (not => or ->)
+• Graph types: graph TD (top-down), graph LR (left-right)
+
+CORRECT FORMAT:
+    :::artifact{{type="application/vnd.mermaid" title="Market Analysis"}}
+    graph TD
+        A["Market Overview"] --> B["Brand A"]
+        A --> C["Brand B"]
+        B --> D["Growth: 16.6 percent YoY"]
+        C --> E["Penetration: 41.6 percent"]
+    :::
+
+- BAR CHARTS (comparing metrics across categories):
+    :::artifact{{type="application/vnd.mermaid" title="Sales Comparison"}}
+    %%{{init: {{'theme':'base'}}}}%%
+    xychart-beta
+        title "Brand Sales Growth (YoY)"
+        x-axis ["GN1", "Lux", "Lifebuoy", "Dove", "Santoor"]
+        y-axis "Growth Percent" 0 --> 20
+        bar [16.6, 8.2, 12.4, 5.7, 10.1]
+    :::
+
+- LINE CHARTS (trends over time):
+    :::artifact{{type="application/vnd.mermaid" title="Market Share Trend"}}
+    %%{{init: {{'theme':'base'}}}}%%
+    xychart-beta
+        title "GN1 Market Share Trend"
+        x-axis ["Jan", "Feb", "Mar", "Apr", "May", "Jun"]
+        y-axis "Market Share Percent" 0 --> 20
+        line [12.5, 13.2, 13.8, 14.5, 15.1, 16.6]
+    :::
+
+- PIE CHARTS (showing proportions):
+    :::artifact{{type="application/vnd.mermaid" title="Category Share"}}
+    %%{{init: {{'theme':'base'}}}}%%
+    pie title Market Share by Brand
+        "GN1" : 16.6
+        "Lux" : 41.6
+        "Lifebuoy" : 18.5
+        "Others" : 23.3
+    :::
+
+- MULTIPLE DATA SERIES (comparing trends):
+    :::artifact{{type="application/vnd.mermaid" title="Brand Performance"}}
+    %%{{init: {{'theme':'base'}}}}%%
+    xychart-beta
+        title "Sales vs Penetration Trends"
+        x-axis ["Q1", "Q2", "Q3", "Q4"]
+        y-axis "Percent" 0 --> 50
+        line [10, 12, 15, 16.6]
+        line [35, 38, 40, 41.6]
+    :::
+
+Output the chart artifact(s) only. Begin immediately — no preamble.
+"""
+
+
 def build_formatter_prompt(user_query: str, rag_answer: str, confidence: float) -> str:
     return f"""You are a professional content formatter for an enterprise RAG system.
 
@@ -258,8 +355,6 @@ def formatter_node(state: PipelineState) -> Dict[str, Any]:
     print("="*70)
 
     user_query = state.user_query
-    rag_final_answer = state.rag_output.final_answer if state.rag_output else ""
-    confidence = state.evaluation.confidence_score if state.evaluation else 0.8
 
     # DEBUG: Print the full RAG output
     print("\n" + "-"*70)
@@ -284,21 +379,21 @@ def formatter_node(state: PipelineState) -> Dict[str, Any]:
             })
         }
 
-    # ✅ PRIORITY 2: Direct answer from semantic OR normal RAG - both get LLM formatting
+    # ✅ PRIORITY 2: Direct answer from semantic (no prior RAG streaming) — full reformat
     if state.clarification_message and not state.awaiting_clarification:
-        print("📝 Formatting direct answer from semantic node")
+        print("📝 Formatting direct answer from semantic node (full reformat)")
         rag_final_answer = state.clarification_message
         confidence = 1.0
+        prompt = build_formatter_prompt(user_query, rag_final_answer, confidence)
+        print(f"\n📝 Direct answer to format ({len(rag_final_answer)} chars)")
+        print(f"🔹 Confidence: {confidence:.2f}")
     else:
+        # RAG already streamed its full answer live — only append charts, no repeat text
         rag_final_answer = state.rag_output.final_answer if state.rag_output else ""
         confidence = state.evaluation.confidence_score if state.evaluation else 0.8
-
-    # PRIORITY 3: Normal RAG formatting
-
-    print(f"\n📝 RAG's answer to format ({len(rag_final_answer)} chars)")
-    print(f"🔹 Confidence: {confidence:.2f}")
-
-    prompt = build_formatter_prompt(user_query, rag_final_answer, confidence)
+        prompt = build_chart_only_prompt(user_query, rag_final_answer, state.enriched_query or "")
+        print(f"\n📊 Chart-only formatter ({len(rag_final_answer)} chars RAG input)")
+        print(f"🔹 Confidence: {confidence:.2f}")
 
     # Plain invoke (not with_structured_output) so tokens are emitted as
     # content chunks and captured by graph.astream_events() for live streaming.

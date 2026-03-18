@@ -293,6 +293,7 @@ async def generate_stream(user_query, langchain_messages, user_id, session_id, m
 
     rag_started = False   # True once we've sent the first RAG/formatter token
     buffer = ""           # Accumulates tokens until a newline for SAS replacement
+    current_node = ""     # Tracks which node is currently streaming
 
     try:
         async for event in graph.astream_events(input_data, config=config, version="v2"):
@@ -311,6 +312,17 @@ async def generate_stream(user_query, langchain_messages, user_id, session_id, m
             if not rag_started:
                 yield _sse_chunk(chunk_id, created_time, model, delta={"role": "assistant"})
                 rag_started = True
+
+            # When switching from rag → formatter, flush the buffer and inject
+            # a blank line so that :::artifact blocks start on their own line
+            # and are recognised by the LibreChat renderer.
+            if node == "formatter" and current_node == "rag":
+                if buffer:
+                    yield _sse_chunk(chunk_id, created_time, model,
+                                     delta={"content": append_sas_to_blob_urls(buffer)})
+                    buffer = ""
+                yield _sse_chunk(chunk_id, created_time, model, delta={"content": "\n\n"})
+            current_node = node
 
             buffer += token
             # Flush every complete line with SAS URLs applied

@@ -12,6 +12,19 @@ import os
 import re
 from typing import Dict, Any, List, Optional, Tuple
 
+
+def _inject_sql_where(query: str, extra_where: str) -> str:
+    """Inject extra_where conditions into a SQL query's WHERE clause."""
+    where_match = re.search(r'\bWHERE\b', query, re.IGNORECASE)
+    if where_match:
+        pos = where_match.end()
+        return query[:pos] + f" ({extra_where}) AND " + query[pos:]
+    end_match = re.search(r'\b(ORDER BY|GROUP BY|HAVING|LIMIT)\b', query, re.IGNORECASE)
+    if end_match:
+        pos = end_match.start()
+        return query[:pos] + f" WHERE ({extra_where}) " + query[pos:]
+    return query + f" WHERE ({extra_where})"
+
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import tool
@@ -396,40 +409,46 @@ LIMIT 200;
 _TOOL_DOCSTRING = _build_tool_docstring()
 
 
-@tool
-def execute_metadata_sql(query: str) -> str:
-    """Execute a read-only SQL query against the metadata table and return results as JSON."""
-    # -- Safety checks --
-    normalized = query.strip().upper()
-    if not normalized.startswith("SELECT"):
-        return json.dumps({"error": "Only SELECT queries are allowed.", "query": query})
+def _make_sql_tool(sql_filter: Optional[str]):
+    """Return an `execute_metadata_sql` LangChain tool with `sql_filter` captured in closure.
 
-    forbidden = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT", "REVOKE"]
-    for kw in forbidden:
-        # Match as whole word to avoid false positives (e.g., "SELECTED")
-        if f" {kw} " in f" {normalized} " or normalized.startswith(f"{kw} "):
-            return json.dumps({"error": f"Forbidden keyword: {kw}", "query": query})
+    This avoids a ContextVar: the filter is bound at node-dispatch time and
+    cannot be altered by the LLM or any other concurrent request.
+    """
 
-    if _TABLE_NAME.lower() not in query.lower():
-        return json.dumps({"error": f"Query must target the {_TABLE_NAME} table.", "query": query})
+    def execute_metadata_sql(query: str) -> str:
+        # -- Safety checks --
+        normalized = query.strip().upper()
+        if not normalized.startswith("SELECT"):
+            return json.dumps({"error": "Only SELECT queries are allowed.", "query": query})
 
-    # -- Execute via the unified query interface --
-    try:
-        columns, rows, total = _execute_query(query, max_rows=200)
+        forbidden = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "CREATE", "GRANT", "REVOKE"]
+        for kw in forbidden:
+            if f" {kw} " in f" {normalized} " or normalized.startswith(f"{kw} "):
+                return json.dumps({"error": f"Forbidden keyword: {kw}", "query": query})
 
-        return json.dumps({
-            "columns": columns,
-            "rows": rows,
-            "returned_count": len(rows),
-            "total_count": total,
-        }, default=str)
+        if _TABLE_NAME.lower() not in query.lower():
+            return json.dumps({"error": f"Query must target the {_TABLE_NAME} table.", "query": query})
 
-    except Exception as e:
-        return json.dumps({"error": str(e), "query": query})
+        # -- Inject mandatory access filter (captured from closure — LLM cannot bypass) --
+        if sql_filter:
+            query = _inject_sql_where(query, sql_filter)
+            print(f"  🔒 SQL access filter applied: {sql_filter}")
 
+        # -- Execute via the unified query interface --
+        try:
+            columns, rows, total = _execute_query(query, max_rows=200)
+            return json.dumps({
+                "columns": columns,
+                "rows": rows,
+                "returned_count": len(rows),
+                "total_count": total,
+            }, default=str)
+        except Exception as e:
+            return json.dumps({"error": str(e), "query": query})
 
-# Inject the dynamic docstring so the LLM sees the correct table name and columns
-execute_metadata_sql.__doc__ = _TOOL_DOCSTRING
+    execute_metadata_sql.__doc__ = _TOOL_DOCSTRING
+    return tool(execute_metadata_sql)
 
 
 # ---------------------------------------------------------------------------
@@ -459,9 +478,12 @@ def document_retriever_node(state: PipelineState) -> Dict[str, Any]:
     print(f"  Query: {user_query}")
     print(f"  Enriched: {enriched_query}")
 
-    # -- Build prompt --
-    tools = [execute_metadata_sql]
-    tools_map = {"execute_metadata_sql": execute_metadata_sql}
+    # Build a per-request tool with the access filter captured in closure.
+    # The LLM never sees or controls this — it is injected into every SQL query before execution.
+    # Uses file_category_det and country_det columns — the _det variants in the SQL metadata table.
+    sql_tool = _make_sql_tool(state.sql_filter)
+    tools = [sql_tool]
+    tools_map = {"execute_metadata_sql": sql_tool}
     llm = create_llm()
     llm_with_tools = llm.bind_tools(tools)
 

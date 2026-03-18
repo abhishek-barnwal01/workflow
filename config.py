@@ -39,3 +39,6 @@ METADATA_TABLE_NAME = os.getenv("METADATA_TABLE_NAME", "")
 DATABRICKS_SERVER_HOSTNAME = os.getenv("DATABRICKS_SERVER_HOSTNAME", "")
 DATABRICKS_HTTP_PATH = os.getenv("DATABRICKS_HTTP_PATH", "")
 DATABRICKS_ACCESS_TOKEN = os.getenv("DATABRICKS_ACCESS_TOKEN", "")
+
+# MongoDB (LibreChat — used to resolve user ObjectId → email)
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/LibreChat")

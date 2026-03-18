@@ -5,7 +5,7 @@ from typing import Dict, Any, List
 from langchain_core.messages import ToolMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.tools import tool
-from tools import azure_ai_search
+from tools import azure_ai_search, set_access_filter
 from models import RAGOutput, RetrievedDoc, PipelineState
 import json
 import hashlib
@@ -166,7 +166,11 @@ def rag_node(state: PipelineState, config: RunnableConfig = None) -> Dict[str, A
     print("RAG MESSAGES:")
     last_msgs = state.messages[-5:]
     for i, msg in enumerate(last_msgs):
-        print(f"{i+1}. {msg.type}: {msg.content[:200]}") 
+        print(f"{i+1}. {msg.type}: {msg.content[:200]}")
+
+    # Apply access filter for this request (computed by semantic_node from user's access rules).
+    # The LLM never sees or controls this — it is merged into every Azure AI Search call.
+    set_access_filter(state.odata_filter)
 
     user_query = state.user_query
     enriched_query = state.enriched_query or ""

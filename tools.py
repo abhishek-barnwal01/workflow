@@ -1,4 +1,5 @@
 """Azure AI Search tool with hybrid search, filters, facets, and pagination"""
+from contextvars import ContextVar
 from langchain.tools import tool
 from azure.search.documents import SearchClient
 from azure.search.documents.models import VectorizedQuery
@@ -8,6 +9,17 @@ import config
 import json
 from typing import Optional, List
 import hashlib
+
+# ---------------------------------------------------------------------------
+# Per-request access filter (set by semantic_node from access_control rules).
+# The LLM never sees or controls this — it is merged at execution time.
+# ---------------------------------------------------------------------------
+_access_filter: ContextVar[Optional[str]] = ContextVar("_access_filter", default=None)
+
+
+def set_access_filter(filter_str: Optional[str]) -> None:
+    """Set the mandatory access filter for the current async context."""
+    _access_filter.set(filter_str)
 
 # ---------------------------------------------------------------------------
 # Module-level singletons — created once per process, reused on every call.
@@ -175,6 +187,11 @@ Example 8 - Summarize a document (read ALL pages with pagination):
         facets = None
         skip = None
         select_fields = None
+
+    # Merge mandatory access filter (set per-request by semantic_node — LLM cannot override)
+    _af = _access_filter.get()
+    if _af and index_type == "main_data":
+        filter = f"({filter}) and ({_af})" if filter else _af
 
     print(f"\n🔍 azure_ai_search | index={index_type} | query={query[:60]}{'...' if len(query)>60 else ''} | top_k={top_k} | filter={filter or 'none'} | facets={facets or 'none'} | skip={skip or 0}")
 

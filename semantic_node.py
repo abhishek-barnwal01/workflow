@@ -9,6 +9,7 @@ import json
 from memory_store import store
 from langgraph.types import RunnableConfig
 from utils import safe_utf8, sanitize_any, create_llm, execute_tool_calls
+from access_control import get_access_rules, build_odata_filter, build_sql_filter
 
 
 def semantic_node(state: PipelineState, config: RunnableConfig = None) -> Dict[str, Any]:
@@ -38,6 +39,13 @@ def semantic_node(state: PipelineState, config: RunnableConfig = None) -> Dict[s
     print(f"Query: {user_query}")
     print(f"User ID: {user_id}")
     print(f"Clarification Mode: {awaiting_clarification}")
+
+    # -- Access control: compute mandatory filters and store in state --
+    # Passed explicitly to rag_node (odata_filter) and document_retriever_node (sql_filter).
+    # The LLM never sees or controls them.
+    _rules = get_access_rules(user_id)
+    odata_filter = build_odata_filter(_rules)  # Azure AI Search OData (file_category_ai, country_ai)
+    sql_filter = build_sql_filter(_rules)       # SQL WHERE fragment (file_category_det, country_det)
     if awaiting_clarification and previous_ambiguity:
         print(f"Previous Entity: {previous_ambiguity.entity}")
         print(f"Previous Options: {[opt.label for opt in previous_ambiguity.options[:5]]}")
@@ -102,7 +110,12 @@ def semantic_node(state: PipelineState, config: RunnableConfig = None) -> Dict[s
             "ambiguity_detected": sanitize_any(AmbiguityInfo(ambiguous=False).model_dump()),
             "document_category": None,
             "document_listing_output": None,  # clear stale listing from prior turn
+            "odata_filter": odata_filter,
+            "sql_filter": sql_filter,
+            "intent_type": "document_listing",
         }
+
+    unified: UnifiedSemanticOutput | None = None
 
     if awaiting_clarification and previous_ambiguity:
         print("\n" + "-" * 70)
@@ -215,9 +228,16 @@ When user wants to read, summarize, or get insights from a specific document:
 - document_category will be one of the predefined categories in our system (e.g., "Link testing", "Usage/Attitude (U&A)", "Brand Health track") — this helps RAG select the right schema and retrieval strategy.
 - Never use the direct-answer shortcut; document content is not stored in history.
 
+─── PRODUCT CATEGORY ──────────────────────────────────────────────────────
+Extract product_category from the query if any product category is mentioned.
+Known values (use exactly as written):
+  - "Soaps" (brands: Lux, Lifebuoy, Dove, Pears, Hamam, etc.)
+  - "Household Insecticides" (brands: Mortein, All Out, Good Knight, HIT, etc.)
+  - null if no product category can be determined from the query
+
 ─── OUTPUT ────────────────────────────────────────────────────────────────
 Return all fields: intent_type, confidence, enriched_query, domain_context,
-ambiguity_detected, reasoning, task_type, document_category."""),
+ambiguity_detected, reasoning, task_type, document_category, product_category."""),
             MessagesPlaceholder("messages"),
             ("human", "Query: {user_query}\n\nClassify intent AND enrich in one step. Check chat history before marking semantic_broad.")
         ])
@@ -260,7 +280,44 @@ ambiguity_detected, reasoning, task_type, document_category."""),
     
     # Track new messages for state
     all_new_messages = []
-    
+
+    # ========================================================================
+    # ACCESS GATE: product_category vs. user's allowed categories
+    #
+    # The LLM has now extracted product_category from the query (e.g. "Soaps").
+    # Compare it against the user's allowed search_categories from access_rules.json.
+    # If there's a mismatch → return access-denied immediately, zero Azure calls.
+    # This works for ALL intents and ALL query types (filename or general).
+    # ========================================================================
+    _allowed_cats = _rules.get("search_categories")  # None = unrestricted
+    _detected_cat = unified.product_category if unified is not None else None
+
+    if _allowed_cats and _detected_cat and _detected_cat not in _allowed_cats:
+        print(f"\n🔒 ACCESS GATE: detected '{_detected_cat}' — not in allowed {_allowed_cats}. Blocking.")
+        _access_msg = (
+            f"I found references to **{_detected_cat}** content, but that category falls outside "
+            "your current access permissions. Please contact your administrator if you believe "
+            "you should have access to it."
+        )
+        return {
+            "messages": sanitize_any([AIMessage(content=_access_msg)]),
+            "user_memories": sanitize_any(user_memories),
+            "clarification_message": _access_msg,
+            "semantic_chitchat": True,   # stop the pipeline here
+            "awaiting_clarification": False,
+            "previous_ambiguity": None,
+            "enriched_query": "",
+            "domain_context": None,
+            "ambiguity_detected": sanitize_any(AmbiguityInfo(ambiguous=False).model_dump()),
+            "task_type": None,
+            "document_category": unified.document_category,
+            "product_category": _detected_cat,
+            "document_listing_output": None,
+            "odata_filter": odata_filter,
+            "sql_filter": sql_filter,
+            "intent_type": "direct",
+        }
+
     # ========================================================================
     # STEP 2A: CHITCHAT - Generate friendly response and END
     # ========================================================================
@@ -327,6 +384,10 @@ ambiguity_detected, reasoning, task_type, document_category."""),
                 AmbiguityInfo(ambiguous=False).model_dump()
             ),
             "document_listing_output": None,  # clear stale listing from prior turn
+            "odata_filter": odata_filter,
+            "sql_filter": sql_filter,
+            "intent_type": "chitchat",
+            "product_category": unified.product_category,
         }
 
     # ========================================================================
@@ -373,7 +434,11 @@ ambiguity_detected, reasoning, task_type, document_category."""),
             ),
             "task_type": None,        # clear any stale "listing" from a prior turn
             "document_category": None,
+            "product_category": unified.product_category,
             "document_listing_output": None,  # clear stale listing from prior turn
+            "odata_filter": odata_filter,
+            "sql_filter": sql_filter,
+            "intent_type": "direct",
         }
 
     # ========================================================================
@@ -419,7 +484,11 @@ ambiguity_detected, reasoning, task_type, document_category."""),
             ),
             "task_type": "listing",
             "document_category": unified.document_category,
+            "product_category": unified.product_category,
             "document_listing_output": None,  # clear stale listing; document_retriever_node sets fresh
+            "odata_filter": odata_filter,
+            "sql_filter": sql_filter,
+            "intent_type": "document_listing",
         }
 
     # ========================================================================
@@ -471,7 +540,11 @@ ambiguity_detected, reasoning, task_type, document_category."""),
                 "ambiguity_detected": sanitize_any(output.ambiguity_detected.model_dump()),
                 "task_type": output.task_type,
                 "document_category": output.document_category,
+                "product_category": unified.product_category,
                 "document_listing_output": None,  # clear stale listing from prior turn
+                "odata_filter": odata_filter,
+                "sql_filter": sql_filter,
+                "intent_type": "semantic_specific",
             }
 
         print(f"✅ Enriched Query: {output.enriched_query}")
@@ -501,7 +574,11 @@ ambiguity_detected, reasoning, task_type, document_category."""),
             ),
             "task_type": output.task_type,
             "document_category": output.document_category,
+            "product_category": unified.product_category,
             "document_listing_output": None,  # clear stale listing from prior turn
+            "odata_filter": odata_filter,
+            "sql_filter": sql_filter,
+            "intent_type": "semantic_specific",
         }
 
     # ========================================================================
@@ -678,4 +755,7 @@ OUTPUT:
             "task_type": None,        # clear any stale "listing" from a prior turn
             "document_category": None,
             "document_listing_output": None,  # clear stale listing from prior turn
+            "odata_filter": odata_filter,
+            "sql_filter": sql_filter,
+            "intent_type": "semantic_broad",
         }
