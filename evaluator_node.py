@@ -1,41 +1,9 @@
 """Evaluator Node - Evaluate RAG output using full prompt and structured output"""
 
 from typing import Dict, Any
-from langchain_openai import AzureChatOpenAI
 from models import PipelineState, RAGOutput, EvaluatorOutput
-from memory_store import store  # in case you want to access memory
 import json
-
-
-# ----------------- Helpers -----------------
-def create_llm():
-    """Create AzureChatOpenAI instance"""
-    import config
-    return AzureChatOpenAI(
-        azure_deployment=config.AZURE_OPENAI_DEPLOYMENT,
-        azure_endpoint=config.AZURE_OPENAI_ENDPOINT,
-        api_key=config.AZURE_OPENAI_KEY,
-        api_version=config.AZURE_OPENAI_API_VERSION,
-        temperature=1,
-    )
-
-
-def safe_utf8(text: str) -> str:
-    if not text:
-        return ""
-    return text.encode("utf-8", errors="replace").decode("utf-8")
-
-
-def sanitize_any(obj):
-    if obj is None:
-        return None
-    if isinstance(obj, str):
-        return safe_utf8(obj)
-    if isinstance(obj, list):
-        return [sanitize_any(i) for i in obj]
-    if isinstance(obj, dict):
-        return {k: sanitize_any(v) for k, v in obj.items()}
-    return obj
+from utils import safe_utf8, sanitize_any, create_llm
 
 
 # ----------------- Node -----------------
@@ -60,7 +28,7 @@ def evaluator_node(state: PipelineState) -> Dict[str, Any]:
 
     # Show top retrieved docs for debug
     docs_text = "\n\n".join([
-        f"Doc {i+1} (score: {doc.score:.2f}, source: {doc.source}):\n{doc.content[:200]}..."
+        f"Doc {i+1} (score: {doc.score:.2f}, source: {doc.content_path}, pages: {doc.pages}):\n{doc.description[:200]}..."
         for i, doc in enumerate(rag_output.retrieved_docs[:5])
     ])
 

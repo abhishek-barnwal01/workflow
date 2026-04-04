@@ -9,8 +9,8 @@ from langgraph.graph import add_messages
 # -------------------------
 class IntentClassification(BaseModel):
     model_config = {"extra": "forbid"}
-    
-    intent_type: Literal["chitchat", "direct", "semantic"]
+
+    intent_type: Literal["chitchat", "direct", "semantic_specific", "semantic_broad", "document_listing"]
     reasoning: str
     confidence: float = Field(ge=0, le=1)
 
@@ -40,7 +40,28 @@ class SemanticOutput(BaseModel):
     domain_context: Optional[Dict[str, Any]] = None  # optional
     ambiguity_detected: AmbiguityInfo
     reasoning: Optional[str] = None  # optional
+    task_type: Optional[Literal["summarization", "listing", "content_search", "other"]] = "other"
+    document_category: Optional[str] = None  # e.g. "Link Test", "U&A" – best-guess for schema pre-load
 
+class UnifiedSemanticOutput(BaseModel):
+    """Combined intent classification + enrichment in a single LLM call.
+
+    Eliminates the separate intent → enrichment round-trip for direct and
+    semantic_specific intents (saves ~1-3 s per query).
+    """
+    model_config = {"extra": "forbid"}
+
+    # Intent fields (from IntentClassification)
+    intent_type: Literal["chitchat", "direct", "semantic_specific", "semantic_broad", "document_listing"]
+    confidence: float = Field(ge=0, le=1)
+
+    # Enrichment fields (from SemanticOutput) — populated for direct / semantic_specific
+    enriched_query: str = ""
+    domain_context: Optional[Dict[str, Any]] = None
+    ambiguity_detected: AmbiguityInfo = Field(default_factory=lambda: AmbiguityInfo(ambiguous=False))
+    reasoning: Optional[str] = None
+    task_type: Optional[Literal["summarization", "listing", "content_search", "other"]] = "other"
+    document_category: Optional[str] = None
 
 # -------------------------
 # RAG Node Models
@@ -48,9 +69,11 @@ class SemanticOutput(BaseModel):
 class RetrievedDoc(BaseModel):
     model_config = {"extra": "forbid"}
 
-    content: str
-    score: float
-    source: str
+    filename: str
+    content_path: str
+    score: Optional[float] = None  # may be absent for listing queries
+    pages: Optional[str] = None    # may be absent for listing queries
+    description: str
 
 
 class RAGOutput(BaseModel):
@@ -58,8 +81,8 @@ class RAGOutput(BaseModel):
 
     retrieved_docs: List[RetrievedDoc]
     final_answer: str  # ← RAG's synthesized answer
-    search_strategy: str
-    reasoning: str
+    search_strategy: Optional[str] = None
+    reasoning: Optional[str] = None
     total_searches: int
 
 
@@ -82,6 +105,18 @@ class EvaluatorOutput(BaseModel):
     reasoning: str
     missing_info: List[str] = []
     suggestion: str
+
+
+# -------------------------
+# Document Listing Models
+# -------------------------
+class DocumentListingOutput(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    formatted_response: str  # Pre-formatted markdown response
+    documents: List[Dict[str, Any]] = Field(default_factory=list)  # Raw rows from SQL
+    total_count: int = 0
+    query_used: str = ""
 
 
 # -------------------------
@@ -114,8 +149,19 @@ class PipelineState(BaseModel):
     awaiting_clarification: bool = False  # Flag to track if we're waiting for clarification response
     previous_ambiguity: Optional[AmbiguityInfo] = None  # Store previous ambiguity for context
 
-    # 🔹 Add retrieval memory to track docs already fetched (changed to list for JSON compatibility)
-    retrieval_memory: Dict[str, List[str]] = Field(
-        default_factory=lambda: {"semantic": [], "rag": []}
-    )
+    # Memories loaded once in semantic_node and reused by rag_node (avoids double DB query).
+    # Each entry is a plain dict with keys: filename, content_path, description, pages, score.
+    user_memories: List[Dict[str, Any]] = Field(default_factory=list)
+
     ambiguity_detected: Optional[AmbiguityInfo] = Field(default_factory=lambda: AmbiguityInfo(ambiguous=False))
+
+    # Set by semantic_node; consumed by rag_node for deterministic flow control.
+    task_type: Optional[str] = None           # "summarization" | "listing" | "content_search" | "other"
+    document_category: Optional[str] = None   # e.g. "Link Test", "U&A" – used to pre-load schema
+
+    # When True, formatter_node skips its LLM call; app.py streams the formatter directly.
+    skip_formatter: bool = False
+    
+    # Document listing output — set by document_retriever_node for listing queries.
+    # Preserved in state so subsequent queries can reference the listed documents.
+    document_listing_output: Optional[DocumentListingOutput] = None

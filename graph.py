@@ -41,6 +41,7 @@ from clarification_node import clarification_node
 from rag_node import rag_node
 from evaluator_node import evaluator_node
 from formatter_node import formatter_node
+from document_retriever_node import document_retriever_node
 from persistence import checkpointer
 from memory_store import store
 
@@ -48,11 +49,21 @@ from memory_store import store
 def semantic_router(state: PipelineState):
     """Route from semantic node:
     - If chitchat response generated → END
+    - If document_listing intent → document_retriever node
+    - If direct answer from history → formatter
     - Otherwise → clarification node
     """
     # Check if semantic_chitchat flag is set (chitchat response already generated)
     if hasattr(state, 'semantic_chitchat') and state.semantic_chitchat:
         return END
+    
+    # Document listing queries → fast SQL path (skips RAG + formatter)
+    if state.task_type == "listing":
+        return "document_retriever"
+    
+    if state.clarification_message and (not state.ambiguity_detected or not state.ambiguity_detected.ambiguous):
+        return "formatter"
+
     return "clarification"
 
 
@@ -75,6 +86,7 @@ def build_graph():
     builder.add_node("rag", rag_node)
     # builder.add_node("evaluator", evaluator_node)
     builder.add_node("formatter", formatter_node)
+    builder.add_node("document_retriever", document_retriever_node)
 
     builder.set_entry_point("semantic")
     
@@ -84,6 +96,8 @@ def build_graph():
         semantic_router,
         {
             "clarification": "clarification",
+            "formatter": "formatter",
+            "document_retriever": "document_retriever",
             END: END,
         },
     )
@@ -103,6 +117,9 @@ def build_graph():
     builder.add_edge("rag", "formatter")
     builder.add_edge("formatter", END)
 
+    # Document retriever goes directly to END (inline formatting, no formatter needed)
+    builder.add_edge("document_retriever", END)
+    
     return builder.compile(
         checkpointer=checkpointer,
         store=store,

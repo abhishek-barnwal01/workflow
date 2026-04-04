@@ -1,10 +1,13 @@
 # Flask
-flask==3.0.0
+# flask==3.0.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
 
 # LangChain 1.x ecosystem
 langchain>=1.0.0
 langchain-openai>=0.3.0
 langchain-core>=1.0.0
+langchain-community>=0.2.0
 
 # LangGraph with PostgreSQL
 langgraph>=1.0.0
@@ -14,6 +17,9 @@ langgraph-checkpoint-postgres>=3.0.0
 # PostgreSQL
 psycopg[binary,pool]>=3.0.0
 
+# Databricks (required when DB_BACKEND=databricks)
+databricks-sql-connector>=3.0.0
+
 # Azure
 azure-search-documents==11.4.0
 openai>=1.0.0
@@ -21,4 +27,3 @@ openai>=1.0.0
 # Utils
 pydantic>=2.0.0
 python-dotenv>=1.0.0
- 
